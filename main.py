@@ -97,10 +97,11 @@ class UserRequest(enum.Enum):
 
 
 class VideoPlayer:
-    def __init__(self, directory=None, extensions=[".mp4", ".mov"], recursive=False, resize_factor=1.0):
+    def __init__(self, directory=None, extensions=[".mp4", ".mov"], recursive=False, resize_factor=1.0, with_audio=False):
+
         self.extensions = extensions
         self.user_request = UserRequest.NONE
-        self.with_audio = False
+        self.with_audio = with_audio
         self.audio_volume = 1.0
         self.loop_mode = False
         self.is_paused = False
@@ -117,6 +118,7 @@ class VideoPlayer:
         self.frame_count_digits = 0
         self.frame_time_ms = 0
         self.total_time_ms = 0
+        self.current_time_ms = 0
         self.frame_width = 0
         self.frame_height = 0
 
@@ -133,12 +135,11 @@ class VideoPlayer:
         if not video_capture.isOpened():
             return
 
-        # Get current time in seconds and current frame position
-        current_time = video_capture.get(cv.CAP_PROP_POS_MSEC) / 1000.0
+        # Get the current frame position
         frame_position = int(video_capture.get(cv.CAP_PROP_POS_FRAMES))
 
         # Compute time format strings
-        current_time_format_string = get_time_format_string_from_seconds(current_time)
+        current_time_format_string = get_time_format_string_from_seconds(self.current_time_ms / 1000)
         total_time_format_string = get_time_format_string_from_seconds(self.total_time_ms / 1000)
 
         print(f'{self.frame_width}x{self.frame_height}, {self.fps:0.2f} fps | '
@@ -258,7 +259,7 @@ class VideoPlayer:
     # Favorites feature: when you press a key that's not otherwise mapped to a function like pausing, going to the next
     # video, restarting, etc., the first press will save the video as a favorite associated with the key. Any subsequent
     # press of this key will recall the saved video.
-    def play_video(self, resize_factor=None):
+    def play_video(self, resize_factor=None, start_time=0, duration=None, cutup_interval=None):
         if resize_factor is None:
             resize_factor = self.resize_factor
         jump_time = None
@@ -281,14 +282,34 @@ class VideoPlayer:
                 audio_capture.set_mute(0)
                 initial_volume = self.audio_volume
 
-        self.print_basic_video_properties(video_capture)
-        if self.video_filter != VideoFilter.NO_FILTER:
-            print(f"Filter set to {VideoFilter(self.video_filter).name.replace('_', ' ')}")
+        # If cutup interval is defined, generate a random start point
+        if cutup_interval is not None:
+            start_time = random.random() * (self.total_time_ms - cutup_interval)
+            duration = cutup_interval
+
+        # Seek to the given start time
+        if start_time > 0:
+            video_capture.set(cv.CAP_PROP_POS_MSEC, start_time)
+
+        # Calculate end time
+        if duration is None:
+            end_time = self.total_time_ms
+        elif duration > 0:
+            end_time = min(start_time + duration, self.total_time_ms)
 
         while True:
             if not self.is_paused or zero_frames_read:
                 # Get current video frame
                 ret, frame = video_capture.read()
+
+                self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
+                if self.current_time_ms >= end_time:
+                    break
+
+                if zero_frames_read:
+                    self.print_basic_video_properties(video_capture)
+                    if self.video_filter != VideoFilter.NO_FILTER:
+                        print(f"Filter set to {VideoFilter(self.video_filter).name.replace('_', ' ')}")
                 zero_frames_read = False
 
                 if self.with_audio:
@@ -307,16 +328,15 @@ class VideoPlayer:
                 # Handle video EOF
                 if not ret:
                     if self.loop_mode:
+                        # Seek back to the start of video
+                        video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
+                        ret, frame = video_capture.read()
+
                         if self.with_audio:
                             # Audio player must be closed and re-opened since we hit EOF
                             audio_capture.close_player()
                             audio_capture = MediaPlayer(self.video_file, ff_opts={'sync': 'video'})
                             audio_frame, val = audio_capture.get_frame()
-
-                        # Seek back to the start of video
-                        video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
-                        ret, frame = video_capture.read()
-
                     else:
                         # End of video
                         break
@@ -353,7 +373,7 @@ class VideoPlayer:
 
             # Press 't' to set a time to jump back to with 'j'
             elif wait_key_chr == 't':
-                jump_time = video_capture.get(cv.CAP_PROP_POS_MSEC)
+                jump_time = self.current_time_ms
                 jump_time_format_string = get_time_format_string_from_seconds(jump_time / 1000.0)
                 print(f"Jump time set to {jump_time_format_string}")
             # Press 'j' to jump back to the time set by 't'
@@ -403,10 +423,8 @@ class VideoPlayer:
                 else:
                     seek_time = -5.0 * speed_multiplier
 
-                # Get current position in ms
-                video_position_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
                 # Calculate target position in ms
-                target_position_ms = video_position_ms + 1000.0 * seek_time
+                target_position_ms = self.current_time_ms + 1000.0 * seek_time
                 # Constrain within the bounds of the video duration
                 target_position_ms = min(max(0, target_position_ms), self.total_time_ms)
                 frame_to_seek_time_string = get_time_format_string_from_seconds(target_position_ms / 1000.0)
@@ -414,6 +432,9 @@ class VideoPlayer:
                 video_capture.set(cv.CAP_PROP_POS_MSEC, target_position_ms)
                 if self.with_audio:
                     audio_capture.seek(target_position_ms / 1000.0, relative=False, seek_by_bytes=False, accurate=True)
+                if self.is_paused:
+                    ret, frame = video_capture.read()
+                    self.filter_resize_display_frame(frame, resize_factor)
                 print(f"Seeking {'+' if seek_time > 0 else ''}{seek_time}s to {frame_to_seek_time_string}.")
 
             # Press 's' to speed up or 'd' to slow down in a cycle of
@@ -459,6 +480,12 @@ class VideoPlayer:
                     self.user_request = UserRequest.REPLAY
                     break
 
+            elif wait_key_chr == 'D':
+                root = tk.Tk()
+                root.withdraw()
+                video_directory = filedialog.askdirectory(mustexist=True)
+                self.add_videos(video_directory)
+
             # Handle any other key press as setting/recalling a favorite video
             elif wait_key != 255:
                 # print(f"Wait key code: {wait_key}")
@@ -470,32 +497,36 @@ class VideoPlayer:
                     print(f"Clearing favorites.")
                 elif wait_key in self.favorites_map.keys():
                     # Cue up the favorite video if we're not already playing it
-                    if self.favorites_map[wait_key] != self.video_file:
-                        self.video_file = self.favorites_map[wait_key]
-                        self.user_request = UserRequest.REPLAY
-                        print(f"Recalling favorite {wait_key_chr}")
-                        break
+                    if self.favorites_map[wait_key] == self.video_file:
+                        continue
+                    self.video_file = self.favorites_map[wait_key]
+                    self.user_request = UserRequest.REPLAY
+                    print(f"Recalling favorite {wait_key_chr}")
+                    break
                 else:
                     already_mapped = False
                     for key in self.favorites_map.keys():
                         if self.video_file == self.favorites_map[key]:
-                            print(f"This video already saved to key '{chr(key)}' (code: {key})")
                             already_mapped = True
+                            print(f"This video is already saved to key {chr(key)} (code: {key})")
                             break
                     if not already_mapped:
-                        print(f"Saving video to favorite {wait_key_chr} (code: {wait_key})")
                         self.favorites_map[wait_key] = self.video_file
+                        print(f"Saving video to favorite {wait_key_chr} (code: {wait_key})")
 
         video_capture.release()
         if self.with_audio:
             audio_capture.close_player()
 
-    def play_videos(self, with_replacement=False, resize_factor=1.0):
+    def play_videos(self, with_replacement=False, resize_factor=None, cutup_interval=None):
         if len(self.video_files) == 0:
             print(f"Didn't find any video files. Load video files first.")
             return
 
         print(f"Found {len(self.video_files)} videos.")
+
+        if resize_factor is None:
+            resize_factor = self.resize_factor
 
         # If random with replacement, set up iterator to a pick random file from video files. Calling next() on this
         # iterator will always return a video file. If random without replacement, set up an empty iterator to be
@@ -512,15 +543,16 @@ class VideoPlayer:
                 # Play the video. If the user requests a favorite video, that current video will get unloaded,
                 # the player's video file will point to the favorite video, and play_video() will return True.
                 # If play_video() returns False, we can move on to the next random video.
-                self.play_video(resize_factor=resize_factor)
+                self.play_video(resize_factor=resize_factor, cutup_interval=cutup_interval)
 
                 while self.user_request == UserRequest.REPLAY:
-                    self.play_video(resize_factor=resize_factor)
+                    self.play_video(resize_factor=resize_factor, cutup_interval=cutup_interval)
 
             except StopIteration:
                 # The iterator is empty. Randomize the file order, re-initialize the iterator, and try again.
                 random.shuffle(self.video_files)
                 video_iterator = iter(self.video_files)
+
 
 def watch_camera():
     camera_capture = cv.VideoCapture(0)
