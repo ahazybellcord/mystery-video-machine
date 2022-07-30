@@ -9,7 +9,7 @@ import numpy as np
 import cv2 as cv
 from ffpyplayer.player import MediaPlayer
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
 
 ########################################################################################################################
@@ -45,17 +45,22 @@ def get_hours_minutes_seconds_milliseconds_from_seconds(seconds):
     return hours, minutes, seconds, milliseconds
 
 # Given a tuple of (hours, minutes, seconds, milliseconds), return a time string formatted by "HH:MM:SS:MSS".
-def get_time_format_string_from_hh_mm_ss_ms(hours, minutes, seconds, milliseconds):
+def get_time_string_from_hh_mm_ss_ms(hours, minutes, seconds, milliseconds):
+    # Don't print hours if less than 60 minutes
     if hours > 0:
-        time_format_string = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}.{int(milliseconds):03d}"
+        time_string = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}.{int(milliseconds):03d}"
     else:
-        time_format_string = f"{int(minutes):02d}:{int(seconds):02d}.{int(milliseconds):03d}"
-    return time_format_string
+        time_string = f"{int(minutes):02d}:{int(seconds):02d}.{int(milliseconds):03d}"
+    return time_string
 
 # Given a time interval expressed in seconds, return a time string formatted by "HH:MM:SS:MSS".
-def get_time_format_string_from_seconds(seconds):
-    return get_time_format_string_from_hh_mm_ss_ms(*get_hours_minutes_seconds_milliseconds_from_seconds(seconds))
+def get_time_string_from_seconds(seconds):
+    return get_time_string_from_hh_mm_ss_ms(*get_hours_minutes_seconds_milliseconds_from_seconds(seconds))
 
+def check_is_directory(directory):
+    if directory is None:
+        return False
+    return os.path.isdir(directory)
 
 def valid_resize_factor(factor):
     if factor is None:
@@ -111,33 +116,46 @@ class VideoFilter(enum.IntEnum):
 
     FILTER_COUNT = 30
 
+# User options to interrupt normal player functionality
 class UserRequest(enum.Enum):
     NONE = 0,
-    REPLAY = 1,
+    FORCE_PLAY = 1,
     ABORT = 2
 
 
 class VideoPlayer:
-    def __init__(self, directory=None, extensions=[".mp4", ".mov"], recursive=False, resize_factor=(1.0, 1.0),
-                 with_audio=False, recording_directory=r"%USERPROFILE%\Videos", recording_dimensions=None):
+    def __init__(self, video_directory=None, extensions=(".mp4", ".mov"), recursive=False, with_audio=False,
+                 recording_directory=r"%USERPROFILE%\Videos", recording_dimensions=None, cutup_mode=False,
+                 cutup_interval=1000):
         self.extensions = extensions
+        self.recursive = recursive
         self.user_request = UserRequest.NONE
         self.with_audio = with_audio
         self.audio_volume = 1.0
         self.loop_mode = False
         self.is_paused = False
         self.is_muted = False
+        self.cutup_mode = cutup_mode
+        self.cutup_interval = cutup_interval
+
         self.is_recording = False
         self.recording_directory = os.path.expandvars(recording_directory)
         self.recording_dimensions = recording_dimensions
         self.recording_filename = None
         self.recording_capture = None
-        self.video_filter = VideoFilter.NO_FILTER
-        self.resize_factor = resize_factor if valid_resize_factor(resize_factor) else (1.0, 1.0)
 
-        self.video_files = None
-        self.load_videos(directory, extensions=extensions, recursive=recursive)
+        self.video_filter = VideoFilter.NO_FILTER
+
+        # The directory to pull initial videos from
+        self.video_directory = video_directory
+        # Keep video file names as keys in a dictionary (with dummy values) to easily avoid adding duplicates
+        self.video_files_dict = {}
+        # Populate the video files dictionary
+        self.load_videos(video_directory, extensions, recursive)
+        # The current video file playing
         self.video_file = None
+
+        self.with_replacement = False
 
         self.fps = 0
         self.frame_count = 0
@@ -164,26 +182,22 @@ class VideoPlayer:
         frame_position = int(video_capture.get(cv.CAP_PROP_POS_FRAMES))
 
         # Compute time format strings
-        current_time_format_string = get_time_format_string_from_seconds(self.current_time_ms / 1000)
-        total_time_format_string = get_time_format_string_from_seconds(self.total_time_ms / 1000)
+        current_time_string = get_time_string_from_seconds(self.current_time_ms / 1000)
+        total_time_string = get_time_string_from_seconds(self.total_time_ms / 1000)
 
-        print(f'{self.frame_dimensions[0]}x{self.frame_dimensions[1]}, {self.fps:0.2f} fps | '
+        print(f'{self.video_file}\n{self.frame_dimensions[0]}x{self.frame_dimensions[1]}, {self.fps:0.2f} fps | '
               f'{frame_position:0{self.frame_count_digits}d}/{int(self.frame_count)} | '
-              f'{current_time_format_string}/{total_time_format_string}')
+              f'{current_time_string}/{total_time_string}')
 
-    def load_videos(self, directory, extensions=[".mov", ".mp4"], recursive=False):
-        if directory is None:
-            return
-        if not os.path.isdir(directory):
-            return
-        self.video_files = get_files(directory, extensions=extensions, recursive=recursive)
-
-    def add_videos(self, directory, extensions=[".mov", ".mp4"], recursive=False):
-        if directory is None:
-            return
-        if not os.path.isdir(directory):
-            return
-        self.video_files += get_files(directory, extensions=extensions, recursive=recursive)
+    def load_videos(self, directory=None, extensions=None, recursive=None):
+        if not check_is_directory(directory):
+            directory = self.video_directory
+        if extensions is None:
+            extensions = self.extensions
+        if recursive is None:
+            recursive = self.recursive
+        for video_file in get_files(directory, extensions, recursive):
+            self.video_files_dict[video_file] = 0
 
     def filter_frame(self, frame, video_filter):
         def apply_filter_mask(mask, frame_to_filter):
@@ -261,15 +275,16 @@ class VideoPlayer:
             frame = cv.cvtColor(frame, cv.COLOR_LUV2RGB)
         return frame
         
-    def filter_resize_display_frame(self, frame, resize_factor, video_filter):
-        frame = self.filter_frame(copy.deepcopy(frame), video_filter)
+    def filter_resize_display_frame(self, frame, resize_factor=(1.0, 1.0), video_filter=VideoFilter.NO_FILTER):
+        # Apply the filter to the video frame
+        if video_filter != VideoFilter.NO_FILTER:
+            frame = self.filter_frame(copy.deepcopy(frame), video_filter)
         # Resize video frame
         if resize_factor != (1.0, 1.0):
             frame = cv.resize(frame, np.multiply(resize_factor, self.frame_dimensions).astype(int))
+        # Display the frame
         cv.imshow('', frame)
         return frame
-
-
 
     def save_static_video_stats(self, video_capture):
         if not video_capture.isOpened():
@@ -284,35 +299,30 @@ class VideoPlayer:
                                  int(video_capture.get(cv.CAP_PROP_FRAME_HEIGHT)))
 
     # Play a video file.
-    def play_video(self, resize_factor=None, start_time=0, duration=None, cutup_interval=None, video_filter=None):
-        if resize_factor is None:
-            resize_factor = self.resize_factor
+    def play_video(self, resize_factor=None, start_time=0, duration=None, video_filter=None):
         frame = None
         jump_time = None
-        jump_time_format_string = ''
+        jump_time_string = ''
         force_redisplay = False
         force_refresh = True
         first_frame = True
         self.user_request = UserRequest.NONE
-
+        
+        if resize_factor is None:
+            resize_factor = (1.0, 1.0)
         if video_filter is None:
             video_filter = self.video_filter
         if video_filter == VideoFilter.RANDOM:
             video_filter = random.randint(0, VideoFilter.FILTER_COUNT - 1)
 
-        if self.recording_dimensions is None:
-            self.recording_dimensions = self.frame_dimensions
-
         video_capture = cv.VideoCapture(self.video_file)
         self.save_static_video_stats(video_capture)
 
-        print(f"Playing {self.video_file}.")
-
         # If cutup interval is defined, generate a random start point
-        if cutup_interval is not None:
-            start_time = random.random() * (self.total_time_ms - cutup_interval)
-            duration = cutup_interval
-            print(f"Cutup mode on. Interval = {cutup_interval / 1000.0:0.3}s.")
+        if self.cutup_mode and self.cutup_interval is not None:
+            start_time = random.random() * (self.total_time_ms - self.cutup_interval)
+            duration = self.cutup_interval
+            print(f"Cutup mode on. Interval = {self.cutup_interval / 1000.0:0.3}s.")
 
         # Seek to the given start time
         if start_time > 0:
@@ -335,16 +345,17 @@ class VideoPlayer:
             elif not self.is_paused or force_refresh:
                 # Get current video frame
                 ret, frame = video_capture.read()
+                force_refresh = False
 
                 # Save the current video time in milliseconds
                 self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
-
-                force_refresh = False
 
                 if first_frame:
                     self.print_basic_video_properties(video_capture)
                     if video_filter != VideoFilter.NO_FILTER:
                         print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
+                    if self.recording_dimensions is None:
+                        self.recording_dimensions = self.frame_dimensions
                     first_frame = False
 
                 if self.with_audio:
@@ -382,7 +393,7 @@ class VideoPlayer:
                 if self.is_recording and not self.is_paused:
                     # Resize video frame
                     if not self.recording_dimensions == self.frame_dimensions:
-                        recorded_frame = cv.resize(filtered_frame, self.frame_dimensions)
+                        recorded_frame = cv.resize(filtered_frame, self.recording_dimensions)
                     else:
                         recorded_frame = filtered_frame
                     self.recording_capture.write(recorded_frame)
@@ -425,8 +436,8 @@ class VideoPlayer:
             # Press 't' to set a time to jump back to with 'j'
             elif wait_key_chr == 't':
                 jump_time = self.current_time_ms
-                jump_time_format_string = get_time_format_string_from_seconds(jump_time / 1000.0)
-                print(f"Jump time set to {jump_time_format_string}")
+                jump_time_string = get_time_string_from_seconds(jump_time / 1000.0)
+                print(f"Jump time set to {jump_time_string}")
 
             # Press 'j' to jump back to the time set by 't'
             elif wait_key_chr == 'j':
@@ -438,7 +449,7 @@ class VideoPlayer:
                         audio_capture.seek(jump_time / 1000, relative=False, seek_by_bytes=False, accurate=True)
                     if self.is_paused:
                         force_refresh = True
-                    print(f"Jumping back to {jump_time_format_string}")
+                    print(f"Jumping back to {jump_time_string}")
 
             # Press space to pause
             elif wait_key_chr == ' ':
@@ -488,7 +499,7 @@ class VideoPlayer:
                 target_position_ms = self.current_time_ms + 1000.0 * seek_time
                 # Constrain within the bounds of the video duration
                 target_position_ms = min(max(0, target_position_ms), self.total_time_ms)
-                frame_to_seek_time_string = get_time_format_string_from_seconds(target_position_ms / 1000.0)
+                frame_to_seek_time_string = get_time_string_from_seconds(target_position_ms / 1000.0)
 
                 video_capture.set(cv.CAP_PROP_POS_MSEC, target_position_ms)
                 if self.with_audio:
@@ -527,6 +538,50 @@ class VideoPlayer:
                     force_redisplay = True
                 print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
 
+            # Press 'c' to toggle cutup mode.
+            elif wait_key_chr == 'c':
+                self.cutup_mode = not self.cutup_mode
+                print(f"Cutup mode {'on' if self.cutup_mode else 'off'}.")
+
+            elif wait_key_chr == 'i':
+                # Create an instance of Tkinter frame
+                user_window = tk.Tk()
+
+                # Set the geometry of Tkinter frame
+                user_window.geometry("250x130")
+                user_window.resizable(False, False)
+
+                def set_cutup_interval():
+                    interval = entry.get()
+                    if not interval.isnumeric():
+                        user_window.destroy()
+                        return
+
+                    interval = int(interval)
+                    if interval <= 0:
+                        user_window.destroy()
+                        return
+
+                    self.cutup_interval = interval
+                    user_window.destroy()
+                    print(f"Setting cutup interval to {interval}ms.")
+
+                # Initialize a Label to display the User Input
+                label = tk.Label(user_window, text="Enter cutup interval in ms", font=("Arial 14"), height=1)
+                label.pack(pady=10)
+
+                # Create an Entry widget to accept User Input
+                entry = tk.Entry(user_window, width=12)
+                entry.focus_set()
+                entry.pack()
+
+                # Create a Button to validate Entry Widget
+                button = ttk.Button(user_window, text="SET", width=20)
+                button.configure(command=set_cutup_interval)
+                button.pack(pady=20)
+
+                user_window.mainloop()
+
             # Press 'i' to print basic video information.
             elif wait_key_chr == 'i':
                 self.print_basic_video_properties(video_capture)
@@ -535,7 +590,7 @@ class VideoPlayer:
             elif wait_key_chr == 'z':
                 self.is_recording = not self.is_recording
                 if self.is_recording:
-                    time_string = get_time_format_string_from_seconds(time.time()).replace(':', '-').replace('.', ',')
+                    time_string = get_time_string_from_seconds(time.time()).replace(':', '-').replace('.', ',')
                     self.recording_filename = os.path.join(self.recording_directory, f"recording_{time_string}.mp4")
 
                     if self.recording_dimensions is None:
@@ -553,13 +608,13 @@ class VideoPlayer:
             elif wait_key_chr == 'o':
                 root = tk.Tk()
                 root.withdraw()
-                video_file = filedialog.askopenfilename()
+                video_file = os.path.normpath(filedialog.askopenfilename())
 
                 name, ext = os.path.splitext(video_file)
                 if ext in self.extensions:
                     self.video_file = video_file
-                    self.video_files.append(video_file)
-                    self.user_request = UserRequest.REPLAY
+                    self.video_files_dict[video_file] = 0
+                    self.user_request = UserRequest.FORCE_PLAY
                     print(f"Added {video_file} to video files.")
                     break
 
@@ -567,11 +622,18 @@ class VideoPlayer:
             elif wait_key_chr == 'O':
                 root = tk.Tk()
                 root.withdraw()
-                video_directory = filedialog.askdirectory(mustexist=True)
-                video_count = len(self.video_files)
-                self.add_videos(video_directory)
-                videos_added = len(self.video_files) - video_count
+                video_directory = os.path.normpath(filedialog.askdirectory(mustexist=True))
+                video_count = len(list(self.video_files_dict.keys()))
+                self.load_videos(video_directory)
+                videos_added = len(list(self.video_files_dict.keys())) - video_count
                 print(f"Added {videos_added} video file{'s' if videos_added != 1 else ''}.")
+
+            # Press backtick to print list of video files (debug feature)
+            elif wait_key_chr == '`':
+                counter = 0
+                for video_file in list(self.video_files_dict.keys()):
+                    print(f"{counter} {video_file}")
+                    counter += 1
 
             # Handle any other key press as setting/recalling a favorite video
             elif wait_key != 255:
@@ -587,7 +649,7 @@ class VideoPlayer:
                     if self.favorites_map[wait_key] == self.video_file:
                         continue
                     self.video_file = self.favorites_map[wait_key]
-                    self.user_request = UserRequest.REPLAY
+                    self.user_request = UserRequest.FORCE_PLAY
                     print(f"Recalling favorite {wait_key_chr}")
                     break
                 else:
@@ -605,28 +667,34 @@ class VideoPlayer:
         if self.with_audio:
             audio_capture.close_player()
 
-    def play_videos(self, with_replacement=False, resize_factor=None, cutup_interval=None, video_filter=None,
-                    recording_directory=None, recording_dimensions=None):
-        if len(self.video_files) == 0:
+    def play_videos(self, with_replacement=False, resize_factor=None, cutup_mode=None, cutup_interval=None,
+                    video_filter=None, recording_directory=None, recording_dimensions=None):
+        file_count = len(list(self.video_files_dict.keys()))
+        if file_count == 0:
             print(f"Didn't find any video files. Load video files first.")
             return
-        print(f"Found {len(self.video_files)} videos.")
+        print(f"Found {file_count} video{'s' if file_count != 1 else ''}.")
 
-        if resize_factor is None:
-            resize_factor = self.resize_factor
+        self.with_replacement = with_replacement
+
         if video_filter is None:
             video_filter = self.video_filter
 
         if recording_directory is not None:
-            if os.path.isdir(recording_directory):
-                self.recording_directory = recording_directory
+            self.recording_directory = recording_directory
         if recording_dimensions is not None:
             self.recording_dimensions = recording_dimensions
+
+        if cutup_mode is not None:
+            self.cutup_mode = cutup_mode
+        if cutup_interval is not None:
+            self.cutup_interval = cutup_interval
 
         # If random with replacement, set up iterator to a pick random file from video files. Calling next() on this
         # iterator will always return a video file. If random without replacement, set up an empty iterator to be
         # initialized below, as it follows the same pattern as when we've exhausted the iterator.
-        video_iterator = iter(lambda: random.choice(self.video_files), None) if with_replacement else iter([])
+        video_files = list(self.video_files_dict.keys())
+        video_iterator = iter(lambda: random.choice(video_files), None) if with_replacement else iter([])
 
         while self.user_request != UserRequest.ABORT:
             try:
@@ -635,18 +703,21 @@ class VideoPlayer:
                 # this call to next() will raise a StopIteration exception.
                 self.video_file = next(video_iterator)
 
-                # Play the video. If the user requests a favorite video, that current video will get unloaded,
-                # the player's video file will point to the favorite video, and play_video() will return True.
+                video_file_done = False
+                
+                # Play the video. When the user requests a favorite video, the current video will get unloaded,
+                # the player's video file will be redirected to the favorite video, and the user request state will
+                # indicate REPLAY.
                 # If play_video() returns False, we can move on to the next random video.
-                self.play_video(resize_factor=resize_factor, cutup_interval=cutup_interval, video_filter=video_filter)
-
-                while self.user_request == UserRequest.REPLAY:
-                    self.play_video(resize_factor=resize_factor, cutup_interval=cutup_interval, video_filter=video_filter)
+                while self.user_request == UserRequest.FORCE_PLAY or not video_file_done:
+                    self.play_video(resize_factor=resize_factor, video_filter=video_filter)
+                    video_file_done = True
 
             except StopIteration:
                 # The iterator is empty. Randomize the file order, re-initialize the iterator, and try again.
-                random.shuffle(self.video_files)
-                video_iterator = iter(self.video_files)
+                video_files = list(self.video_files_dict.keys())
+                random.shuffle(video_files)
+                video_iterator = iter(video_files)
 
 
 def watch_camera():
