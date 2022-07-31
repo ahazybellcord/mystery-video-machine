@@ -124,6 +124,85 @@ class UserRequest(enum.Enum):
     FORCE_PLAY = 1
     ABORT = 2
 
+
+def display_user_manual():
+    user_manual = r'''
+    Welcome to the weird and wacky video machine of madness.
+    
+    After loading video files (see 'L' below), files will 
+    start playing randomly (without replacement). Good luck.
+    WIP. Many features to be fixed, refined, and added...
+
+    These key-codes (case-sensitive) will trigger the corresponding functions.
+    
+    L - Select individual files to add to the library matching the given file extensions.
+    o - Open a single video file to play immediately and add to the library of files.
+    O - Open a folder of video files and add all files matching the given extensions 
+        to the video library from this folder and any of its sub-folders.
+    q - Exit. Any video recording in progress will be completed.
+    n - Skip to the next video.
+    Space - Pause/resume video playback. Nice and intuitive.
+    Backspace - Jump to the start of the current video. (Use 'delete' on mac.)
+    h - Print this help menu, duh.
+    i - Print basic video information: resolution, frame rate, current frame number, 
+        total number of frames, and the current and total running time in mm:ss:ms format.
+    l - Toggle loop mode on/off. When turned on, if a video reaches the end, it will jump back
+        to the start and continue looping indefinitely.
+    t - Set the current time to recall with 'j'.
+    j - Jump back to the time set by 't'.
+    g - Toggle random filter mode. When turned on, a random filter will be selected each time a new video is loaded.
+    f - Jump forward one second scaled by the current speed factor (see 's' and 'd').
+    F - Jump forward five seconds scaled by the current speed factor (see 's' and 'd').
+    r - Jump backward one second scaled by the current speed factor (see 's' and 'd').
+    R - Jump backward one second scaled by the current speed factor (see 's' and 'd').
+    s - Cycle through speed factors (1.0x, 2.0x, 4.0x, 8.0x, 16.0x, 0.0625x, 0.125x, 0.25x, 0.5x) in the 'fast' direction.
+    d - Cycle through speed factors (1.0x, 0.5x, 0.25x, 0.125x, 0.0625x, 16.0x, 8.0x, 4.0x, 2.0x) in the 'slow' direction.
+    a - Return to normalcy. Set the speed to 1.0x and turn off the filter.
+    y - Cycle through video filters in the + direction.
+    u - Cycle through video filters in the - direction.
+    c - Toggle cutup mode on/off. When turned on, starting on the load of the next video, videos will play starting
+        at random locations for the duration specified by 'k'. Combine with random filter mode for some wild results.
+    k - Set the cutup duration in milliseconds via an interactive dialog window.
+    z - Toggle stream recording to a file. Any frames displayed while the video player is paused will not be written
+        to the recording. The file will be saved to the default user video file directory. On Windows, this is
+        C:\Users\<user>\Videos; on mac, it's /Users/<user>/Movies. The filename SHOULD be unique since the filename
+        contains a string representing the time in seconds since the epoch when the recording file was created.
+        TODO: Use the same approach but make the filename in human-readable date format.
+    ` - Print out the current list of files in the video library. More of a diagnostic feature since you can't do
+        anything with it.
+        
+          
+    -._.=-._.=-._.=-._.=-._.=-._.=-._.=-._
+    - The Super Secret Favorites Feature -
+    .=-._.=-._.=-._.=-._.=-._.=-._.=-._.=-
+    
+    This is the extra-special coup de grâce. Excepting the keys already bound to functions as described above,
+    any other key press will set the current video as a favorite to be recalled any time by a subsequent press
+    of the same key, as long as that key isn't already set to another video (or the same video).
+    
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    
+    Video filters (in order): no filter, monochrome, value invert, red channel, green channel, blue channel,
+    yellow channel, cyan channel, magenta channel, RGB to GRB, RGB to RBG, RGB to BGR, RGB to BRG, RGB to GBR,
+    BGR to HSV, RGB to HSV, HSV to BGR, HSV to RGB, BGR to HLS, RGB to HLS, HLS to BGR, HLS to RGB,
+    BGR to LAB, RGB to LAB, LAB to BGR, LAB to RGB, BGR to LUV, RGB to LUV, LUV to BGR, LUV to RGB
+    '''
+
+    user_window = tk.Tk()
+
+    user_window.geometry("1300x1200")
+    user_window.resizable(False, False)
+
+    label = tk.Label(user_window, text=user_manual, font=("Courier 12"), justify=tk.LEFT, anchor="center")
+    label.pack(padx=10, pady=10)
+
+    button = tk.Button(user_window, text="Got it", font=("Bahnscrift 14"), anchor="center",
+                       command=lambda: user_window.destroy())
+    button.pack(pady=10)
+
+    user_window.mainloop()
+
+
 class VideoPlayer:
     def __init__(self, recording_directory=None, recording_dimensions=None):
         self.loop_mode = False
@@ -485,11 +564,16 @@ class VideoPlayer:
                 print("Next video...")
                 break
 
-            # Press 'l' for loop mode toggle
+            # Press 'h' for help.
+            elif wait_key_chr == 'h':
+                display_user_manual()
+
+            # Press 'l' to toggle loop mode
             elif wait_key_chr == 'l':
                 self.loop_mode = not self.loop_mode
                 print(f"Loop mode {'on' if self.loop_mode else 'off'}.")
 
+            # Press 'g' to toggle filter mode (normal, random)
             elif wait_key_chr == 'g':
                 self.video_filter_mode = (self.video_filter_mode + 1) % VideoFilterMode.FILTER_MODES_COUNT
                 print(f"Video filter mode set to {VideoFilterMode(self.video_filter_mode).name.replace('_', ' ')}")
@@ -586,6 +670,7 @@ class VideoPlayer:
                 self.cutup_mode = not self.cutup_mode
                 print(f"Cutup mode {'on' if self.cutup_mode else 'off'}.")
 
+            # Press 'k' to set cutup interval interactively (in ms)
             elif wait_key_chr == 'k':
                 # Create an instance of Tkinter frame
                 user_window = tk.Tk()
@@ -634,7 +719,7 @@ class VideoPlayer:
                 self.release_recorder() if self.is_recording else self.open_recorder()
                 self.is_recording = not self.is_recording
 
-            # Press 'o' to open a new custom file to play
+            # Press 'o' to open a new custom file to play immediately
             elif wait_key_chr == 'o':
                 # TO DO: Figure out why tkinter filedialog functions cause a
                 # segmentation fault only on mac. For now, only allow loading
