@@ -4,6 +4,7 @@ import os
 import math
 import random
 import re
+import sys
 import time
 
 import numpy as np
@@ -125,7 +126,7 @@ class UserRequest(enum.Enum):
     ABORT = 2
 
 class VideoPlayer:
-    def __init__(self, with_audio=False, recording_directory=r"%USERPROFILE%\Videos", recording_dimensions=None,
+    def __init__(self, with_audio=False, recording_directory=None, recording_dimensions=None,
                  cutup_mode=False, cutup_interval=1000):
         self.with_audio = with_audio
         self.audio_volume = 1.0
@@ -136,6 +137,15 @@ class VideoPlayer:
         self.cutup_interval = cutup_interval
 
         self.is_recording = False
+        if recording_directory is None:
+            # Point to the platform-specific user video directory
+            if sys.platform == "darwin":
+                recording_directory = "~/Movies"
+            elif sys.platform == "win32":
+                recording_directory = r"%USERPROFILE%\Videos"
+            else:
+                print("Platform unsupported! How are you running this??")
+                exit(0)
         self.recording_directory = os.path.normpath(os.path.expandvars(recording_directory))
         self.recording_dimensions = recording_dimensions
         self.recording_filepath = None
