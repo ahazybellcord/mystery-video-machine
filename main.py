@@ -494,8 +494,8 @@ class VideoPlayer:
                 self.video_filter_mode = (self.video_filter_mode + 1) % VideoFilterMode.FILTER_MODES_COUNT
                 print(f"Video filter mode set to {VideoFilterMode(self.video_filter_mode).name.replace('_', ' ')}")
 
-            # Press backspace to jump to start of video
-            elif wait_key_chr == '\b':
+            # Press backspace on Windows / delete on mac to jump to start of video
+            elif wait_key_chr == '\b' or wait_key_chr == '\x7f':
                 # Restart the video
                 video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
                 if self.is_paused:
