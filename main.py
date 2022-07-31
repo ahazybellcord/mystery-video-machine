@@ -126,15 +126,14 @@ class UserRequest(enum.Enum):
     ABORT = 2
 
 class VideoPlayer:
-    def __init__(self, with_audio=False, recording_directory=None, recording_dimensions=None,
-                 cutup_mode=False, cutup_interval=1000):
+    def __init__(self, with_audio=False, recording_directory=None, recording_dimensions=None):
         self.with_audio = with_audio
         self.audio_volume = 1.0
         self.loop_mode = False
         self.is_paused = False
         self.is_muted = False
-        self.cutup_mode = cutup_mode
-        self.cutup_interval = cutup_interval
+        self.cutup_mode = False
+        self.cutup_interval = 1000
 
         self.is_recording = False
         if recording_directory is None:
@@ -151,7 +150,6 @@ class VideoPlayer:
         self.recording_filepath = None
         self.recording_capture = None
 
-        self.video_filter = VideoFilter.NO_FILTER
         self.video_filter_mode = VideoFilterMode.NORMAL
         self.user_request = UserRequest.NONE
 
@@ -406,10 +404,10 @@ class VideoPlayer:
         force_refresh = True
         self.user_request = UserRequest.NONE
 
-        if video_filter is None and self.video_filter_mode != VideoFilterMode.RANDOM:
-            video_filter = self.video_filter
-        else:
+        if self.video_filter_mode == VideoFilterMode.RANDOM:
             video_filter = random.randint(0, VideoFilter.FILTER_COUNT - 1)
+        elif video_filter is None:
+            video_filter = VideoFilter.NO_FILTER
 
         video_capture = cv.VideoCapture(self.video_file)
 
@@ -750,29 +748,23 @@ class VideoPlayer:
         if self.with_audio:
             audio_capture.close_player()
 
-    def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=None, cutup_interval=None,
-                    video_filter=None, video_filter_mode=None, recording_directory=None, recording_dimensions=None,
-                    record=False):
+    def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=False, cutup_interval=1000,
+                    video_filter=VideoFilter.NO_FILTER, video_filter_mode=VideoFilterMode.NORMAL,
+                    recording_directory=None, recording_dimensions=None, record=False):
         file_count = self.video_file_count()
         if file_count == 0:
             print(f"Didn't find any video files. Load video files first.")
             return
         print(f"Found {file_count} video{'s' if file_count != 1 else ''}.")
 
-        if video_filter is not None:
-            self.video_filter = video_filter
-        if video_filter_mode is not None:
-            self.video_filter_mode = video_filter_mode
+        self.cutup_mode = cutup_mode
+        self.cutup_interval = cutup_interval
+        self.video_filter_mode = video_filter_mode
 
         if recording_directory is not None:
             self.recording_directory = recording_directory
         if recording_dimensions is not None:
             self.recording_dimensions = recording_dimensions
-
-        if cutup_mode is not None:
-            self.cutup_mode = cutup_mode
-        if cutup_interval is not None:
-            self.cutup_interval = cutup_interval
 
         if record:
             self.is_recording = True
@@ -810,73 +802,6 @@ class VideoPlayer:
             self.recording_capture.release()
             print(f"Video written to {self.recording_filepath}.")
             self.is_recording = False
-
-def watch_camera():
-    camera_capture = cv.VideoCapture(0)
-
-    fps = camera_capture.get(cv.CAP_PROP_FPS)
-    frame_time_ms = int(1000.0 / fps)
-    print(f"{fps} fps = {frame_time_ms}ms/frame.")
-
-    while True:
-        ret, frame = camera_capture.read()
-        if not ret:
-            continue
-
-        cv.imshow('', frame)
-
-        wait_key = cv.waitKey(frame_time_ms) & 0xFF
-        wait_key_chr = chr(wait_key)
-        if wait_key_chr == 'q':
-            break
-
-def mix_video_with_camera(video_directory, extensions):
-    camera_capture = cv.VideoCapture(0)
-    camera_fps = camera_capture.get(cv.CAP_PROP_FPS)
-    camera_frame_time_ms = int(1000.0 / camera_fps)
-    camera_width, camera_height = camera_capture.get(cv.CAP_PROP_FRAME_WIDTH), camera_capture.get(cv.CAP_PROP_FRAME_HEIGHT)
-
-    video_files = get_files(video_directory, extensions, recursive=False)
-    random.shuffle(video_files)
-    video_files_iter = iter(video_files)
-    video_file = next(video_files_iter)
-    video_capture = cv.VideoCapture(video_file)
-    video_fps = video_capture.get(cv.CAP_PROP_FPS)
-    video_frame_time_ms = int(1000.0 / video_fps)
-    video_width, video_height = video_capture.get(cv.CAP_PROP_FRAME_WIDTH), video_capture.get(cv.CAP_PROP_FRAME_HEIGHT)
-
-    while True:
-        camera_ret, camera_frame = camera_capture.read()
-        #cv.imshow('', camera_frame)
-
-        wait_key = cv.waitKey(camera_frame_time_ms) & 0xFF
-        if wait_key == ord('q'):
-            break
-
-        video_ret, video_frame = video_capture.read()
-        if not video_ret:
-            try:
-                video_file = next(video_files_iter)
-            except:
-                random.shuffle(video_files)
-                video_files_iter = iter(video_files)
-                video_file = next(video_files_iter)
-
-            video_capture.release()
-            video_capture = cv.VideoCapture(video_file)
-            video_fps = video_capture.get(cv.CAP_PROP_FPS)
-            video_frame_time_ms = int(1000.0 / video_fps)
-            video_ret, video_frame = video_capture.read()
-
-        video_frame_shape = video_frame.shape
-        print(video_frame_shape)
-        camera_frame = np.zeros(video_frame_shape, np.uint8) + camera_frame
-
-        cv.imshow('', camera_frame)
-
-        wait_key = cv.waitKey(video_frame_time_ms) & 0xFF
-        if wait_key == ord('q'):
-            break
 
 def run():
     video_player = VideoPlayer()
