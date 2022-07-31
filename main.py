@@ -135,13 +135,13 @@ class VideoPlayer:
         if recording_directory is None:
             # Point to the platform-specific user video directory
             if sys.platform == "darwin":
-                recording_directory = "~/Movies"
+                recording_directory = os.path.expanduser("~/Movies")
             elif sys.platform == "win32":
-                recording_directory = r"%USERPROFILE%\Videos"
+                recording_directory = os.path.expandvars(r"%USERPROFILE%\Videos")
             else:
                 print("Platform unsupported! How are you running this??")
                 exit(0)
-        self.recording_directory = os.path.normpath(os.path.expandvars(recording_directory))
+        self.recording_directory = os.path.normpath(recording_directory)
         self.recording_dimensions = recording_dimensions
         self.recording_filepath = None
         self.recording_capture = None
