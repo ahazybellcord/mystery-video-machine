@@ -9,7 +9,6 @@ import time
 
 import numpy as np
 import cv2 as cv
-from ffpyplayer.player import MediaPlayer
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -126,12 +125,9 @@ class UserRequest(enum.Enum):
     ABORT = 2
 
 class VideoPlayer:
-    def __init__(self, with_audio=False, recording_directory=None, recording_dimensions=None):
-        self.with_audio = with_audio
-        self.audio_volume = 1.0
+    def __init__(self, recording_directory=None, recording_dimensions=None):
         self.loop_mode = False
         self.is_paused = False
-        self.is_muted = False
         self.cutup_mode = False
         self.cutup_interval = 1000
 
@@ -434,10 +430,6 @@ class VideoPlayer:
 
         # Calculate end time
         end_time = self.total_time_ms if duration <= 0 else min(start_time + duration, self.total_time_ms)
-        # Initialize audio player
-        if self.with_audio:
-            audio_capture = MediaPlayer(self.video_file, ff_opts={'sync': 'video'})
-            is_initial_volume_set = False
 
         while True:
             # In the case that we're paused, and a filter has changed force a redisplay of the current frame.
@@ -453,31 +445,12 @@ class VideoPlayer:
                 # Save the current video time in milliseconds
                 self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
 
-                if self.with_audio:
-                    # Get current audio frame
-                    audio_frame, val = audio_capture.get_frame()
-
-                    # Set initial volume
-                    if not is_initial_volume_set and audio_frame is not None:
-                        audio_capture.set_volume(0.0 if self.is_muted else self.audio_volume)
-                        is_initial_volume_set = True
-
-                    # Handle audio EOF
-                    if val == 'eof' and audio_frame is None:
-                        audio_capture.close_player()
-
             # Handle video EOF
             if not ret:
                 if self.loop_mode:
                     # Seek back to the start of video
                     video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
                     ret, frame = video_capture.read()
-
-                    if self.with_audio:
-                        # Audio player must be closed and re-opened since we hit EOF
-                        audio_capture.close_player()
-                        audio_capture = MediaPlayer(self.video_file, ff_opts={'sync': 'video'})
-                        audio_frame, val = audio_capture.get_frame()
                 else:
                     # End of video
                     break
@@ -527,9 +500,6 @@ class VideoPlayer:
                 video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
                 if self.is_paused:
                     force_refresh = True
-                if self.with_audio:
-                    # Audio, although set to sync with the video, will not reset by itself
-                    audio_capture.seek(0, relative=False, seek_by_bytes=False, accurate=True)
                 print("Restarting video.")
 
             # Press 't' to set a time to jump back to with 'j'
@@ -543,9 +513,6 @@ class VideoPlayer:
                 if jump_time is not None:
                     # Return to jump point
                     video_capture.set(cv.CAP_PROP_POS_MSEC, jump_time)
-                    if self.with_audio:
-                        # Audio, although set to sync with the video, will not reset by itself
-                        audio_capture.seek(jump_time / 1000, relative=False, seek_by_bytes=False, accurate=True)
                     if self.is_paused:
                         force_refresh = True
                     print(f"Jumping back to {jump_time_string}")
@@ -553,28 +520,7 @@ class VideoPlayer:
             # Press space to pause
             elif wait_key_chr == ' ':
                 self.is_paused = not self.is_paused
-                if self.with_audio:
-                    audio_capture.set_pause(self.is_paused)
                 print(f"Playback {'' if self.is_paused else 'un'}paused.")
-
-            # Press 'm' to mute audio
-            elif wait_key_chr == 'm':
-                if self.with_audio:
-                    # Toggle mute control
-                    self.is_muted = not self.is_muted
-                    # Set audio volume
-                    audio_capture.set_volume(0) if self.is_muted else audio_capture.set_volume(self.audio_volume)
-                    # Won't do jack shit
-                    # audio_capture.set_mute(1) if self.is_muted else audio_capture.set_mute(0)
-                    print("Audio muted.") if self.is_muted else print("Audio unmuted.")
-
-            # Press '+' to increment audio volume by 0.1. Press '-' to decrement audio volume by 0.1.
-            elif wait_key_chr == '-' or wait_key_chr == '+':
-                if self.with_audio:
-                    increment = -0.1 if wait_key_chr == '-' else 0.1
-                    self.audio_volume = round(min(1.0, max(0.0, self.audio_volume + increment)), 2)
-                    audio_capture.set_volume(self.audio_volume)
-                    print(f"Audio volume set to {self.audio_volume}.")
 
             # Press 'r' to rewind 1 second, scaled by the current speed multiplier.
             # Press 'R' to rewind 5 seconds, scaled by the current speed multiplier.
@@ -601,8 +547,6 @@ class VideoPlayer:
                 frame_to_seek_time_string = get_time_string_from_seconds(target_position_ms / 1000.0)
 
                 video_capture.set(cv.CAP_PROP_POS_MSEC, target_position_ms)
-                if self.with_audio:
-                    audio_capture.seek(target_position_ms / 1000.0, relative=False, seek_by_bytes=False, accurate=True)
                 if self.is_paused:
                     force_refresh = True
                 print(f"Seeking {'+' if seek_time > 0 else ''}{seek_time}s to {frame_to_seek_time_string}.")
@@ -745,8 +689,6 @@ class VideoPlayer:
                         print(f"Saving video to favorite {wait_key_chr} (code: {wait_key})")
 
         video_capture.release()
-        if self.with_audio:
-            audio_capture.close_player()
 
     def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=False, cutup_interval=1000,
                     video_filter=VideoFilter.NO_FILTER, video_filter_mode=VideoFilterMode.NORMAL,
