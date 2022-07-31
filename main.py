@@ -213,7 +213,7 @@ class VideoPlayer:
     def load_videos_from_directory(self, directory, extensions, recursive=False):
         return self.load_videos_from_files(get_files(directory, extensions, recursive))
 
-    def load_videos_interactive(self, from_directory=False, recursive=False):
+    def load_videos_interactive(self, from_directory=False, recursive=True):
         def parse_extensions(extensions):
             extension_pattern = r"\.[^ ]+"
             return re.findall(extension_pattern, extensions)
@@ -227,7 +227,7 @@ class VideoPlayer:
             filetypes = map(lambda x: ("Video file", f"*{x}"), extensions)
             if from_directory:
                 directory = os.path.normpath(filedialog.askdirectory(mustexist=True, title="Load all videos within a directory."))
-                files = get_files(directory, extensions, recursive=True)
+                files = get_files(directory, extensions, recursive=recursive)
             else:
                 files = filedialog.askopenfilenames(filetypes=filetypes, title="Load video files.")
 
@@ -636,25 +636,41 @@ class VideoPlayer:
 
             # Press 'o' to open a new custom file to play
             elif wait_key_chr == 'o':
-                root = tk.Tk()
-                root.withdraw()
-                video_file = os.path.normpath(filedialog.askopenfilename())
+                # TO DO: Figure out why tkinter filedialog functions cause a
+                # segmentation fault only on mac. For now, only allow loading
+                # videos at startup on mac.
+                if sys.platform == "win32":
+                    root = tk.Tk()
+                    root.withdraw()
+                    video_file = filedialog.askopenfilename()
 
-                # name, ext = os.path.splitext(video_file)
-                # if ext in self.extensions:
-                self.video_file = video_file
-                self.video_files_dict[video_file] = 0
-                self.user_request = UserRequest.FORCE_PLAY
-                print(f"Added {video_file} to video files.")
-                break
+                    self.video_file = video_file
+                    self.video_files_dict[video_file] = 0
+                    self.user_request = UserRequest.FORCE_PLAY
+                    print(f"Added {video_file} to video files.")
+                    break
+                else:
+                    print("This feature doesn't work on mac. Looking into it...")
 
             # Press 'O' to select a directory of videos to add to the current video file collection
             elif wait_key_chr == 'O':
-                self.load_videos_interactive(from_directory=True)
+                # TO DO: Figure out why tkinter filedialog functions cause a
+                # segmentation fault only on mac. For now, only allow loading
+                # videos at startup on mac.
+                if sys.platform == "win32":
+                    self.load_videos_interactive(from_directory=True)
+                else:
+                    print("This feature doesn't work on mac. Looking into it...")
 
             # Press 'L' to select a individual video files to add to the current video file collection
             elif wait_key_chr == 'L':
-                self.load_videos_interactive(from_directory=False)
+                # TO DO: Figure out why tkinter filedialog functions cause a
+                # segmentation fault only on mac. For now, only allow loading
+                # videos at startup on mac.
+                if sys.platform == "win32":
+                    self.load_videos_interactive(from_directory=False)
+                else:
+                    print("This feature doesn't work on mac. Looking into it...")
 
             # Press backtick to print list of video files (debug feature)
             elif wait_key_chr == '`':
