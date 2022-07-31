@@ -485,9 +485,14 @@ class VideoPlayer:
             video_filter = VideoFilter.NO_FILTER
 
         video_capture = cv.VideoCapture(self.video_file)
+        self.save_static_video_stats(video_capture)
 
-        # If cutup interval is defined, generate a random start point
-        if self.cutup_mode and self.cutup_interval is not None:
+        # If in cutup mode, generate a random starting point with enough time to play
+        # the full interval. If the video is too short, abort.
+        if self.cutup_mode:
+            if self.total_time_ms < self.cutup_interval:
+                video_capture.release()
+                return
             start_time = random.random() * (self.total_time_ms - self.cutup_interval)
             duration = self.cutup_interval
             print(f"Cutup mode on. Interval = {self.cutup_interval / 1000.0:0.3}s.")
@@ -497,15 +502,13 @@ class VideoPlayer:
             video_capture.set(cv.CAP_PROP_POS_MSEC, start_time)
         # Save the current video time in milliseconds
         self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
-        self.save_static_video_stats(video_capture)
 
         self.print_basic_video_properties(video_capture)
         if video_filter != VideoFilter.NO_FILTER:
             print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
+
         if self.is_recording and self.recording_capture is None:
             self.open_recorder()
-        if self.recording_dimensions is None:
-            self.recording_dimensions = tuple(np.multiply(resize_factor, self.frame_dimensions).astype(int))
 
         # Calculate end time
         end_time = self.total_time_ms if duration <= 0 else min(start_time + duration, self.total_time_ms)
@@ -716,7 +719,13 @@ class VideoPlayer:
 
             # Press 'z' to toggle recording the video stream to a file.
             elif wait_key_chr == 'z':
-                self.release_recorder() if self.is_recording else self.open_recorder()
+                if self.is_recording:
+                    self.release_recorder()
+                else:
+                    if self.recording_dimensions is None:
+                        self.recording_dimensions = tuple(np.multiply(resize_factor,
+                                                                      self.frame_dimensions).astype(int))
+                    self.open_recorder()
                 self.is_recording = not self.is_recording
 
             # Press 'o' to open a new custom file to play immediately
