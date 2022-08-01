@@ -17,6 +17,9 @@ from tkinter import filedialog, ttk
 # Utility functions ####################################################################################################
 ########################################################################################################################
 
+def constrain(x, minimum, maximum):
+    return min(max(x, minimum), maximum)
+
 # Return a list of filepaths in a directory that match on any of the extensions.
 # If recursive, include any matches in all subdirectories.
 def get_files(directory, extensions, recursive=False):
@@ -114,6 +117,7 @@ class UserRequest(enum.Enum):
     NONE = 0
     FORCE_PLAY = 1
     ABORT = 2
+    LOAD = 3
 
 
 def display_user_manual():
@@ -159,7 +163,7 @@ def display_user_manual():
     k - Set the cutup duration in milliseconds via an interactive dialog window.
     z - Toggle stream recording to a file. Any frames displayed while the video player is paused will not be written
         to the recording. The file will be saved to the default user video file directory. On Windows, this is
-        C:\Users\<user>\Videos; on mac, it's /Users/<user>/Movies. The filename SHOULD be unique since the filename
+        "C:\Users\<user>\Videos"; on mac, it's "/Users/<user>/Movies". The filename SHOULD be unique since it
         contains a string representing the time in seconds since the epoch when the recording file was created.
         TODO: Use the same approach but make the filename in human-readable date format.
     ` - Print out the current list of files in the video library. More of a diagnostic feature since you can't do
@@ -184,13 +188,14 @@ def display_user_manual():
 
     user_window = tk.Tk()
 
-    user_window.geometry("1300x1200")
+    user_window.geometry("1300x1300")
     user_window.resizable(False, False)
+    user_window.title("The Mystery Video Machine - User Manual")
 
-    label = tk.Label(user_window, text=user_manual, font=("Courier 12"), justify=tk.LEFT, anchor="center")
+    label = tk.Label(user_window, text=user_manual, font=("Courier", 12), justify=tk.LEFT, anchor="center")
     label.pack(padx=10, pady=10)
 
-    button = tk.Button(user_window, text="Got it", font=("Bahnscrift 14"), anchor="center",
+    button = tk.Button(user_window, text="Got it", font=("Bahnscrift", 14), anchor="center",
                        command=lambda: user_window.destroy())
     button.pack(pady=10)
 
@@ -199,6 +204,11 @@ def display_user_manual():
 
 class VideoPlayer:
     def __init__(self, recording_directory=None, recording_dimensions=None):
+        self.window_name = "The Mystery Video Machine"
+        window_flags = cv.WINDOW_AUTOSIZE | cv.WINDOW_KEEPRATIO | cv.WINDOW_GUI_EXPANDED
+        cv.namedWindow(self.window_name, flags=window_flags)
+        cv.moveWindow(self.window_name, -10000, -10000)
+
         self.loop_mode = False
         self.is_paused = False
         self.cutup_mode = False
@@ -227,12 +237,15 @@ class VideoPlayer:
         # The current video file playing
         self.video_file = None
 
-        self.fps = 0
+        self.fps = 0.0
         self.frame_count = 0
         self.frame_count_digits = 0
+        self.frame_position = 0
+        # This has to be an integer value to pass to for waitKey()
         self.frame_time_ms = 0
-        self.total_time_ms = 0
-        self.current_time_ms = 0
+        self.current_time_ms = 0.0
+        self.total_time_ms = 0.0
+        self.total_time_string = ''
         self.frame_dimensions = (0, 0)
 
         self.favorites_map = {}
@@ -260,22 +273,12 @@ class VideoPlayer:
     # Print a string with relevant video properties: width and height in pixels, fps, current frame number,
     # total frame count, current time in hh:mm:ss.mss and total time in hh:mm:ss.ms
     def print_basic_video_properties(self, video_capture):
-        if video_capture is None:
-            return
-        if not video_capture.isOpened():
-            return
-
-        # Get the current frame position
-        frame_position = int(video_capture.get(cv.CAP_PROP_POS_FRAMES))
-        self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
-
-        # Compute time format strings
+        # Format current time in hh:mm:ss:mss
         current_time_string = get_time_string_from_seconds(self.current_time_ms / 1000)
-        total_time_string = get_time_string_from_seconds(self.total_time_ms / 1000)
 
         print(f'{self.video_file}\n{self.frame_dimensions[0]}x{self.frame_dimensions[1]}, {self.fps:0.2f} fps | '
-              f'{frame_position:0{self.frame_count_digits}d}/{int(self.frame_count)} | '
-              f'{current_time_string}/{total_time_string}')
+              f'{self.frame_position:0{self.frame_count_digits}d}/{int(self.frame_count)} | '
+              f'{current_time_string}/{self.total_time_string}')
 
     def load_videos_from_files(self, files):
         file_count = 0
@@ -296,6 +299,11 @@ class VideoPlayer:
         user_window.geometry("450x200")
         user_window.resizable(False, False)
         user_window.title("Load videos...")
+
+        # Disable closing the load video window prematurely
+        def do_nothing():
+            pass
+        user_window.protocol("WM_DELETE_WINDOW", do_nothing)
 
         extensions_label = tk.Label(user_window, text="File extensions to match, e.g. \".mp4 .mov .avi\"",
                                     font=("Bahnscrift", 14))
@@ -324,8 +332,9 @@ class VideoPlayer:
                                                                      initialdir=self.recording_directory))
                 files = get_files(directory, extensions, recursive=recursive)
 
-            if len(files) == 0 and load_option != 0:
-                print(f"No matching video files found in {directory}.")
+            if len(files) == 0:
+                if load_option != 0:
+                    print(f"No matching video files found in {directory}.")
                 return
 
             self.load_videos_from_files(files=files)
@@ -438,7 +447,7 @@ class VideoPlayer:
         if resize_factor != (1.0, 1.0):
             frame = cv.resize(frame, np.multiply(resize_factor, self.frame_dimensions).astype(int))
         # Display the frame
-        cv.imshow('The Mystery Video Machine', frame)
+        cv.imshow(self.window_name, frame)
         return frame
 
     def save_static_video_stats(self, video_capture):
@@ -446,12 +455,21 @@ class VideoPlayer:
             return
 
         self.fps = video_capture.get(cv.CAP_PROP_FPS)
-        self.frame_count = video_capture.get(cv.CAP_PROP_FRAME_COUNT)
-        self.frame_count_digits = math.floor(math.log(self.frame_count, 10)) + 1
+        self.frame_count = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
+        if self.frame_count <= 0:
+            print("This video has a corrupted frame count. Aborting...")
+            return False
+        self.frame_count_digits = int(math.floor(math.log(self.frame_count, 10)) + 1)
         self.frame_time_ms = int(1000.0 / self.fps)
         self.total_time_ms = 1000.0 * self.frame_count / self.fps
+        self.total_time_string = get_time_string_from_seconds(self.total_time_ms / 1000)
         self.frame_dimensions = (int(video_capture.get(cv.CAP_PROP_FRAME_WIDTH)),
                                  int(video_capture.get(cv.CAP_PROP_FRAME_HEIGHT)))
+        return True
+
+    def save_dynamic_video_stats(self, video_capture):
+        self.frame_position = int(video_capture.get(cv.CAP_PROP_POS_FRAMES))
+        self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
 
     def open_recorder(self):
         time_string = get_time_string_from_seconds(time.time()).replace(':', '-').replace('.', ',')
@@ -468,50 +486,59 @@ class VideoPlayer:
         pass
 
     # Play a video file.
-    def play_video(self, resize_factor=(1.0, 1.0), start_time=0, duration=0, video_filter=None):
+    def play_video(self, resize_factor=(1.0, 1.0), start_time=0, duration=0, video_filter=VideoFilter.NO_FILTER):
         frame = None
         jump_time = None
         jump_time_string = ''
         force_redisplay = False
         force_refresh = True
         user_request = UserRequest.NONE
+        error = False
 
+        # If in random filter mode, select a random filter
         if self.video_filter_mode == VideoFilterMode.RANDOM:
             video_filter = random.randint(0, VideoFilter.FILTER_COUNT - 1)
-        elif video_filter is None:
-            video_filter = VideoFilter.NO_FILTER
+            print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
 
+        # Open the video stream to play
         video_capture = cv.VideoCapture(self.video_file)
-        self.save_static_video_stats(video_capture)
+
+        # Save video statistics that won't change as a result of playback
+        if not self.save_static_video_stats(video_capture):
+            error = True
 
         # If in cutup mode, generate a random starting point with enough time to play
         # the full interval. If the video is too short, abort.
         if self.cutup_mode:
+            # If the video is too short to accommodate the cutup interval, move to another video.
+            # This will be an issue if none of the loaded videos are long enough...
             if self.total_time_ms < self.cutup_interval:
-                video_capture.release()
-                return user_request
-            start_time = random.random() * (self.total_time_ms - self.cutup_interval)
-            duration = self.cutup_interval
-            print(f"Cutup mode on. Interval = {self.cutup_interval / 1000.0:0.3}s.")
+                error = True
+            else:
+                start_time = random.random() * (self.total_time_ms - self.cutup_interval)
+                duration = self.cutup_interval
 
-        # Seek to the appropriate start time
-        if self.reverse_mode:
-            # Jump to
-            video_capture.set(cv.CAP_PROP_POS_MSEC, self.total_time_ms)
-        elif start_time > 0:
-            video_capture.set(cv.CAP_PROP_POS_MSEC, start_time)
-        # Save the current video time in milliseconds
-        self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
-
-        self.print_basic_video_properties(video_capture)
-        if video_filter != VideoFilter.NO_FILTER:
-            print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
-
-        if self.is_recording and self.recording_capture is None:
-            self.open_recorder()
+        if error:
+            video_capture.release()
+            return user_request
 
         # Calculate end time
         end_time = self.total_time_ms if duration <= 0 else min(start_time + duration, self.total_time_ms)
+
+        # Calculate frame numbers to start and stop on
+        start_frame = int(self.fps * start_time / 1000)
+        end_frame = int(self.fps * end_time / 1000)
+
+        # Seek to the appropriate start frame
+        if start_frame > 0:
+            video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
+
+        self.save_dynamic_video_stats(video_capture)
+
+        self.print_basic_video_properties(video_capture)
+
+        if self.is_recording and self.recording_capture is None:
+            self.open_recorder()
 
         while True:
             # In the case that we're paused, and a filter has changed force a redisplay of the current frame.
@@ -520,47 +547,35 @@ class VideoPlayer:
                 force_redisplay = False
             # If unpaused, or we seek to a new time while paused, grab the next frame to display here
             elif not self.is_paused or force_refresh:
-                # Get current video frame
-                ret, frame = video_capture.read()
                 force_refresh = False
 
-                # Save the current video time in milliseconds
-                self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
+                if not self.is_paused and self.frame_position > end_frame:
+                    break
 
-                # If playing in reverse, manually set the frame number and handle hitting the start of video.
-                if self.reverse_mode:
-                    if self.current_time_ms <= self.frame_time_ms:
-                        # TODO: Handle loop mode
-                        self.reverse_mode = False
-                        print("Reverse mode off.")
-                    else:
-                        # Backtrack to the frame before the one we just read
-                        video_capture.set(cv.CAP_PROP_POS_MSEC, self.current_time_ms - 2 * self.frame_time_ms)
+                # Get current video frame
+                ret, frame = video_capture.read()
 
                 # Handle video EOF
-                elif not ret:
+                if not ret:
                     if self.loop_mode:
                         # Seek back to the start of video
-                        video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
+                        video_capture.set(cv.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = video_capture.read()
                     else:
                         # End of video
                         break
 
-            # Filter, resize, display frame
-            filtered_frame = self.filter_resize_display_frame(frame, resize_factor, video_filter)
+                self.save_dynamic_video_stats(video_capture)
 
-            if self.is_recording and not self.is_paused:
-                # Resize video frame
-                if self.recording_dimensions != self.frame_dimensions:
-                    recorded_frame = cv.resize(filtered_frame, self.recording_dimensions)
-                else:
-                    recorded_frame = filtered_frame
-                self.recording_capture.write(recorded_frame)
+                filtered_frame = self.filter_resize_display_frame(frame, resize_factor, video_filter)
 
-            # End playback if we hit the end time
-            if self.current_time_ms >= end_time:
-                break
+                if self.is_recording and not self.is_paused:
+                    # Resize video frame
+                    if self.recording_dimensions != self.frame_dimensions:
+                        recorded_frame = cv.resize(filtered_frame, self.recording_dimensions)
+                    else:
+                        recorded_frame = filtered_frame
+                    self.recording_capture.write(recorded_frame)
 
             # Handle user input
             wait_key = cv.waitKey(self.frame_time_ms) & 0xFF
@@ -573,7 +588,7 @@ class VideoPlayer:
                 break
 
             #  Press 'n' for next video.
-            if wait_key_chr == 'n':
+            elif wait_key_chr == 'n':
                 print("Next video...")
                 break
 
@@ -637,16 +652,26 @@ class VideoPlayer:
                 else:
                     seek_time = -5.0 * speed_multiplier
 
-                # Calculate target position in ms
-                target_position_ms = self.current_time_ms + 1000.0 * seek_time
-                # Constrain within the bounds of the video duration
-                target_position_ms = min(max(0, target_position_ms), self.total_time_ms)
+                frames_to_seek = int(math.floor(self.fps / seek_time))
+                target_frame = self.frame_position + frames_to_seek
+                target_frame = constrain(target_frame, 0, self.frame_count - 1)
+                target_position_ms = int(1000.0 * target_frame / self.fps)
+
                 frame_to_seek_time_string = get_time_string_from_seconds(target_position_ms / 1000.0)
 
-                video_capture.set(cv.CAP_PROP_POS_MSEC, target_position_ms)
+                video_capture.set(cv.CAP_PROP_POS_FRAMES, target_frame)
+                print(f"Target: {target_frame}/{self.frame_count}")
                 if self.is_paused:
                     force_refresh = True
                 print(f"Seeking {'+' if seek_time > 0 else ''}{seek_time}s to {frame_to_seek_time_string}.")
+
+            # Press 'e' to advance one frame (just like VLC)
+            elif wait_key_chr == 'e':
+                if self.is_paused:
+                    if self.frame_position < self.frame_count - 1:
+                        video_capture.set(cv.CAP_PROP_POS_FRAMES, self.frame_position + 1)
+                        force_refresh = True
+
 
             # Press 's' to speed up or 'd' to slow down in a cycle of
             # (200%, 400%, 800%, 1600%, 6.25%, 12.5%, 25%, 50%, 100%)
@@ -681,7 +706,8 @@ class VideoPlayer:
             # Press 'c' to toggle cutup mode.
             elif wait_key_chr == 'c':
                 self.cutup_mode = not self.cutup_mode
-                print(f"Cutup mode {'on' if self.cutup_mode else 'off'}.")
+                print(f"Cutup mode {'on' if self.cutup_mode else 'off'}. "
+                      f"Interval = {self.cutup_interval / 1000.0:0.3}s.")
 
             # Press 'k' to set cutup interval interactively (in ms)
             elif wait_key_chr == 'k':
@@ -741,8 +767,14 @@ class VideoPlayer:
 
             # EXPERIMENTAL! Toggle reverse playback
             elif wait_key_chr == 'v':
-                self.reverse_mode = not self.reverse_mode
-                print(f"Reverse mode {'on' if self.reverse_mode else 'off'}")
+                pass
+                # self.reverse_mode = not self.reverse_mode
+                # start_time = self.total_time_ms - start_time
+                # end_time = self.total_time_ms - end_time
+                # if self.is_paused:
+                #     force_refresh = True
+                # frame_index = video_capture.get(cv.CAP_PROP_POS_FRAMES)
+                # print(f"Reverse mode {'on' if self.reverse_mode else 'off'}")
 
             # Press 'o' to open a new custom file to play immediately
             elif wait_key_chr == 'o':
@@ -757,12 +789,13 @@ class VideoPlayer:
                 root.withdraw()
                 video_file = filedialog.askopenfilename(initialdir=self.recording_directory)
 
-                self.video_file = video_file
-                self.video_files_dict[video_file] = 0
-                user_request = UserRequest.FORCE_PLAY
-                root.destroy()
-                print(f"Added {video_file} to video files.")
-                break
+                if video_file != '':
+                    self.video_file = video_file
+                    self.video_files_dict[video_file] = 0
+                    user_request = UserRequest.FORCE_PLAY
+                    root.destroy()
+                    print(f"Added {video_file} to video files.")
+                    break
 
             # Press 'O' to open video files interactively to add to the current video file collection
             elif wait_key_chr == 'O':
@@ -813,11 +846,11 @@ class VideoPlayer:
     def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=False, cutup_interval=1000,
                     video_filter=VideoFilter.NO_FILTER, video_filter_mode=VideoFilterMode.NORMAL,
                     recording_directory=None, recording_dimensions=None, auto_record=False):
+        user_request = UserRequest.NONE
         file_count = self.video_file_count()
         if file_count == 0:
             print(f"Didn't find any video files. Load video files first.")
-            self.load_videos_interactive()
-            return
+            return user_request
 
         print(f"Found {file_count} video{conditional_plural(file_count)}.")
 
@@ -832,8 +865,6 @@ class VideoPlayer:
 
         if auto_record:
             self.is_recording = True
-
-        user_request = UserRequest.NONE
 
         # If random with replacement, set up iterator to a pick random file from video files. Calling next() on this
         # iterator will always return a video file. If random without replacement, set up an empty iterator to be
@@ -869,10 +900,15 @@ class VideoPlayer:
             print(f"Video written to {self.recording_filepath}.")
             self.is_recording = False
 
+        return user_request
+
 def run():
     video_player = VideoPlayer()
-    video_player.load_videos_interactive()
-    video_player.play_videos()
+    user_request = UserRequest.NONE
+    while user_request != UserRequest.ABORT:
+        video_player.load_videos_interactive()
+        cv.moveWindow(video_player.window_name, 0, 0)
+        user_request = video_player.play_videos()
 
 run()
 
