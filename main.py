@@ -126,7 +126,7 @@ def display_user_manual():
 
     These key-codes (case-sensitive) will trigger the corresponding functions.
     
-    L - Interactively load files into the video library. Supply video file extensions
+    O - Interactively load files into the video library. Supply video file extensions
         and use the drop-down menu to choose to either load individual files or have 
         all matching files automatically selected from a chosen folder, with or without 
         including any matches found within sub-folders.
@@ -315,11 +315,13 @@ class VideoPlayer:
 
             load_option = combobox.current()
             if load_option == 0:
-                files = filedialog.askopenfilenames(filetypes=filetypes, title="Load selected video files.")
+                files = filedialog.askopenfilenames(filetypes=filetypes, title="Load selected video files.",
+                                                    initialdir=self.recording_directory)
             else:
                 recursive = (load_option == 2)
                 directory = os.path.normpath(filedialog.askdirectory(mustexist=True,
-                                                                     title="Load all videos within a directory."))
+                                                                     title="Load all videos within a directory.",
+                                                                     initialdir=self.recording_directory))
                 files = get_files(directory, extensions, recursive=recursive)
 
             if len(files) == 0 and load_option != 0:
@@ -753,7 +755,7 @@ class VideoPlayer:
 
                 root = tk.Tk()
                 root.withdraw()
-                video_file = filedialog.askopenfilename()
+                video_file = filedialog.askopenfilename(initialdir=self.recording_directory)
 
                 self.video_file = video_file
                 self.video_files_dict[video_file] = 0
