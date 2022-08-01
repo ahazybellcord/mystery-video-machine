@@ -59,17 +59,8 @@ def get_time_string_from_hh_mm_ss_ms(hours, minutes, seconds, milliseconds):
 def get_time_string_from_seconds(seconds):
     return get_time_string_from_hh_mm_ss_ms(*get_hours_minutes_seconds_milliseconds_from_seconds(seconds))
 
-def valid_resize_factor(factor):
-    if factor is None:
-        return False
-    if len(factor) != 2:
-        return False
-    for component in factor:
-        if not type(component) == float or type(component) == int:
-            return False
-        if component <= 0:
-            return False
-    return True
+def conditional_plural(number):
+    return 's' if number != 1 else ''
 
 ########################################################################################################################
 
@@ -129,7 +120,7 @@ def display_user_manual():
     user_manual = r'''
     Welcome to the weird and wacky video machine of madness.
     
-    After loading video files (see 'L' below), files will 
+    After loading video files (see 'O' below), files will 
     start playing randomly (without replacement). Good luck.
     WIP. Many features to be fixed, refined, and added...
 
@@ -226,7 +217,6 @@ class VideoPlayer:
         self.recording_capture = None
 
         self.video_filter_mode = VideoFilterMode.NORMAL
-        self.user_request = UserRequest.NONE
 
         # Keep video file names as keys in a dictionary (with dummy values) to easily avoid adding duplicates
         self.video_files_dict = {}
@@ -246,6 +236,8 @@ class VideoPlayer:
 
         self.speed_factors = [1.0, 2.0, 4.0, 8.0, 16.0, 0.0625, 0.125, 0.25, 0.5]
         self.speed_factor_index = 0
+
+        self.reverse_mode = False
 
     # Return the list of video files currently loaded in the video player.
     def video_file_list(self):
@@ -272,6 +264,7 @@ class VideoPlayer:
 
         # Get the current frame position
         frame_position = int(video_capture.get(cv.CAP_PROP_POS_FRAMES))
+        self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
 
         # Compute time format strings
         current_time_string = get_time_string_from_seconds(self.current_time_ms / 1000)
@@ -286,13 +279,25 @@ class VideoPlayer:
         for video_file in files:
             self.video_files_dict[video_file] = 0
             file_count += 1
-        print(f"Loaded {file_count} video file{'s' if file_count != 1 else ''}.")
+        print(f"Loaded {file_count} video file{conditional_plural(file_count)}.")
         return file_count
 
     def load_videos_from_directory(self, directory, extensions, recursive=False):
         return self.load_videos_from_files(get_files(directory, extensions, recursive))
 
-    def load_videos_interactive(self, from_directory=False, recursive=True):
+    def load_videos_interactive(self):
+        # Create an instance of Tkinter frame
+        user_window = tk.Tk()
+
+        # Set the geometry of Tkinter frame
+        user_window.geometry("450x200")
+        user_window.resizable(False, False)
+        user_window.title("Load videos...")
+
+        extensions_label = tk.Label(user_window, text="File extensions to match, e.g. \".mp4 .mov .avi\"",
+                                    font=("Bahnscrift", 14))
+        extensions_label.pack(pady=10)
+
         def parse_extensions(extensions):
             extension_pattern = r"\.[^ ]+"
             return re.findall(extension_pattern, extensions)
@@ -304,56 +309,43 @@ class VideoPlayer:
                 return
 
             filetypes = map(lambda x: ("Video file", f"*{x}"), extensions)
-            if from_directory:
-                directory = os.path.normpath(filedialog.askdirectory(mustexist=True, title="Load all videos within a directory."))
-                files = get_files(directory, extensions, recursive=recursive)
-            else:
-                files = filedialog.askopenfilenames(filetypes=filetypes, title="Load video files.")
 
-            if self.load_videos_from_files(files=files) > 0:
-                user_window.destroy()
+            load_option = combobox.current()
+            if load_option == 0:
+                files = filedialog.askopenfilenames(filetypes=filetypes, title="Load selected video files.")
+            else:
+                recursive = (load_option == 2)
+                directory = os.path.normpath(filedialog.askdirectory(mustexist=True,
+                                                                     title="Load all videos within a directory."))
+                files = get_files(directory, extensions, recursive=recursive)
+
+            if len(files) == 0 and load_option != 0:
+                print(f"No matching video files found in {directory}.")
                 return
+
+            self.load_videos_from_files(files=files)
+            user_window.destroy()
 
         def handle_return_press(event):
             load_videos()
 
-        # Create an instance of Tkinter frame
-        user_window = tk.Tk()
-
-        # Set the geometry of Tkinter frame
-        user_window.geometry("500x120")
-        user_window.resizable(False, False)
-
-        extensions_label = tk.Label(user_window, text="File extensions, e.g. \".mp4 .mov .avi\"", font=("Bahnscrift", 14))
-        extensions_label.pack(pady=10)
-
         # Create an Entry widget to accept User Input
-        entry = tk.Entry(user_window, width=40, font=("Bahnscrift", 14))
+        entry = tk.Entry(user_window, width=20, font=("Bahnscrift", 14))
         entry.insert(0, ".mp4 .mov .avi")
         entry.bind('<Return>', handle_return_press)
-        entry.pack()
+        entry.pack(pady=10)
         entry.focus_set()
 
+        options = ["Select individual files", "Select all matching files in a folder",
+                   "Select all matching files in a folder and its subfolders"]
+
+        combobox = ttk.Combobox(user_window, state="readonly", values=options, width=50)
+        combobox.set(options[0])
+        combobox.bind("<Return>", handle_return_press)
+        combobox.pack(pady=15)
+
         button = ttk.Button(user_window, text="Load video files", command=load_videos)
-        button.pack(pady=10)
-
-        def set_cutup_interval():
-            interval = entry.get()
-            if not interval.isnumeric():
-                user_window.destroy()
-                return
-
-            interval = int(interval)
-            if interval <= 0:
-                user_window.destroy()
-                return
-
-            self.cutup_interval = interval
-            user_window.destroy()
-            print(f"Setting cutup interval to {interval}ms.")
-
-        def handle_return_press(event):
-            set_cutup_interval()
+        button.pack(pady=5)
 
         user_window.mainloop()
 
@@ -436,12 +428,12 @@ class VideoPlayer:
     def filter_resize_display_frame(self, frame, resize_factor=(1.0, 1.0), video_filter=VideoFilter.NO_FILTER):
         # Apply the filter to the video frame
         if video_filter != VideoFilter.NO_FILTER:
-            frame = self.filter_frame(copy.deepcopy(frame), video_filter)
+            frame = self.filter_frame(frame, video_filter)
         # Resize video frame
         if resize_factor != (1.0, 1.0):
             frame = cv.resize(frame, np.multiply(resize_factor, self.frame_dimensions).astype(int))
         # Display the frame
-        cv.imshow('', frame)
+        cv.imshow('The Mystery Video Machine', frame)
         return frame
 
     def save_static_video_stats(self, video_capture):
@@ -477,7 +469,7 @@ class VideoPlayer:
         jump_time_string = ''
         force_redisplay = False
         force_refresh = True
-        self.user_request = UserRequest.NONE
+        user_request = UserRequest.NONE
 
         if self.video_filter_mode == VideoFilterMode.RANDOM:
             video_filter = random.randint(0, VideoFilter.FILTER_COUNT - 1)
@@ -492,13 +484,16 @@ class VideoPlayer:
         if self.cutup_mode:
             if self.total_time_ms < self.cutup_interval:
                 video_capture.release()
-                return
+                return user_request
             start_time = random.random() * (self.total_time_ms - self.cutup_interval)
             duration = self.cutup_interval
             print(f"Cutup mode on. Interval = {self.cutup_interval / 1000.0:0.3}s.")
 
-        # Seek to the given start time
-        if start_time > 0:
+        # Seek to the appropriate start time
+        if self.reverse_mode:
+            # Jump to
+            video_capture.set(cv.CAP_PROP_POS_MSEC, self.total_time_ms)
+        elif start_time > 0:
             video_capture.set(cv.CAP_PROP_POS_MSEC, start_time)
         # Save the current video time in milliseconds
         self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
@@ -527,15 +522,25 @@ class VideoPlayer:
                 # Save the current video time in milliseconds
                 self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
 
-            # Handle video EOF
-            if not ret:
-                if self.loop_mode:
-                    # Seek back to the start of video
-                    video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
-                    ret, frame = video_capture.read()
-                else:
-                    # End of video
-                    break
+                # If playing in reverse, manually set the frame number and handle hitting the start of video.
+                if self.reverse_mode:
+                    if self.current_time_ms <= self.frame_time_ms:
+                        # TODO: Handle loop mode
+                        self.reverse_mode = False
+                        print("Reverse mode off.")
+                    else:
+                        # Backtrack to the frame before the one we just read
+                        video_capture.set(cv.CAP_PROP_POS_MSEC, self.current_time_ms - 2 * self.frame_time_ms)
+
+                # Handle video EOF
+                elif not ret:
+                    if self.loop_mode:
+                        # Seek back to the start of video
+                        video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
+                        ret, frame = video_capture.read()
+                    else:
+                        # End of video
+                        break
 
             # Filter, resize, display frame
             filtered_frame = self.filter_resize_display_frame(frame, resize_factor, video_filter)
@@ -558,7 +563,7 @@ class VideoPlayer:
 
             # Press 'q' exit.
             if wait_key_chr == 'q':
-                self.user_request = UserRequest.ABORT
+                user_request = UserRequest.ABORT
                 print("Aborting.")
                 break
 
@@ -679,12 +684,12 @@ class VideoPlayer:
                 user_window = tk.Tk()
 
                 # Set the geometry of Tkinter frame
-                user_window.geometry("250x100")
+                user_window.geometry("250x120")
                 user_window.resizable(False, False)
 
                 # Initialize a Label to display the User Input
-                label = tk.Label(user_window, text="Set cutup interval in ms", font=("Arial 14"))
-                label.pack(pady=10)
+                label = tk.Label(user_window, text="Set cutup interval in ms", font=("Bahnscrift", 14))
+                label.pack(pady=20)
 
                 def set_cutup_interval():
                     interval = entry.get()
@@ -705,7 +710,8 @@ class VideoPlayer:
                     set_cutup_interval()
 
                 # Create an Entry widget to accept User Input
-                entry = tk.Entry(user_window, width=12)
+                entry = tk.Entry(user_window, width=6,  font=("Bahnscrift", 14))
+                entry.insert(0, str(self.cutup_interval))
                 entry.bind('<Return>', handle_return_press)
                 entry.pack()
                 # This only seems to work the first time
@@ -728,43 +734,41 @@ class VideoPlayer:
                     self.open_recorder()
                 self.is_recording = not self.is_recording
 
+            # EXPERIMENTAL! Toggle reverse playback
+            elif wait_key_chr == 'v':
+                self.reverse_mode = not self.reverse_mode
+                print(f"Reverse mode {'on' if self.reverse_mode else 'off'}")
+
             # Press 'o' to open a new custom file to play immediately
             elif wait_key_chr == 'o':
                 # TO DO: Figure out why tkinter filedialog functions cause a
                 # segmentation fault only on mac. For now, only allow loading
                 # videos at startup on mac.
-                if sys.platform == "win32":
-                    root = tk.Tk()
-                    root.withdraw()
-                    video_file = filedialog.askopenfilename()
-
-                    self.video_file = video_file
-                    self.video_files_dict[video_file] = 0
-                    self.user_request = UserRequest.FORCE_PLAY
-                    print(f"Added {video_file} to video files.")
-                    break
-                else:
+                if sys.platform == "darwin":
                     print("This feature doesn't work on mac. Looking into it...")
+                    break
 
-            # Press 'O' to select a directory of videos to add to the current video file collection
+                root = tk.Tk()
+                root.withdraw()
+                video_file = filedialog.askopenfilename()
+
+                self.video_file = video_file
+                self.video_files_dict[video_file] = 0
+                user_request = UserRequest.FORCE_PLAY
+                root.destroy()
+                print(f"Added {video_file} to video files.")
+                break
+
+            # Press 'O' to open video files interactively to add to the current video file collection
             elif wait_key_chr == 'O':
                 # TO DO: Figure out why tkinter filedialog functions cause a
                 # segmentation fault only on mac. For now, only allow loading
                 # videos at startup on mac.
-                if sys.platform == "win32":
-                    self.load_videos_interactive(from_directory=True)
-                else:
+                if sys.platform == "darwin":
                     print("This feature doesn't work on mac. Looking into it...")
+                    break
 
-            # Press 'L' to select a individual video files to add to the current video file collection
-            elif wait_key_chr == 'L':
-                # TO DO: Figure out why tkinter filedialog functions cause a
-                # segmentation fault only on mac. For now, only allow loading
-                # videos at startup on mac.
-                if sys.platform == "win32":
-                    self.load_videos_interactive(from_directory=False)
-                else:
-                    print("This feature doesn't work on mac. Looking into it...")
+                self.load_videos_interactive()
 
             # Press backtick to print list of video files (debug feature)
             elif wait_key_chr == '`':
@@ -784,7 +788,7 @@ class VideoPlayer:
                     if self.favorites_map[wait_key] == self.video_file:
                         continue
                     self.video_file = self.favorites_map[wait_key]
-                    self.user_request = UserRequest.FORCE_PLAY
+                    user_request = UserRequest.FORCE_PLAY
                     print(f"Recalling favorite {wait_key_chr}")
                     break
                 else:
@@ -799,15 +803,18 @@ class VideoPlayer:
                         print(f"Saving video to favorite {wait_key_chr} (code: {wait_key})")
 
         video_capture.release()
+        return user_request
 
     def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=False, cutup_interval=1000,
                     video_filter=VideoFilter.NO_FILTER, video_filter_mode=VideoFilterMode.NORMAL,
-                    recording_directory=None, recording_dimensions=None, record=False):
+                    recording_directory=None, recording_dimensions=None, auto_record=False):
         file_count = self.video_file_count()
         if file_count == 0:
             print(f"Didn't find any video files. Load video files first.")
+            self.load_videos_interactive()
             return
-        print(f"Found {file_count} video{'s' if file_count != 1 else ''}.")
+
+        print(f"Found {file_count} video{conditional_plural(file_count)}.")
 
         self.cutup_mode = cutup_mode
         self.cutup_interval = cutup_interval
@@ -818,8 +825,10 @@ class VideoPlayer:
         if recording_dimensions is not None:
             self.recording_dimensions = recording_dimensions
 
-        if record:
+        if auto_record:
             self.is_recording = True
+
+        user_request = UserRequest.NONE
 
         # If random with replacement, set up iterator to a pick random file from video files. Calling next() on this
         # iterator will always return a video file. If random without replacement, set up an empty iterator to be
@@ -827,7 +836,7 @@ class VideoPlayer:
         video_files = list(self.video_files_dict.keys())
         video_iterator = iter(lambda: random.choice(video_files), None) if with_replacement else iter([])
 
-        while self.user_request != UserRequest.ABORT:
+        while user_request != UserRequest.ABORT:
             try:
                 # This will only fail if there's nothing left to iterate over, which is only in the without replacement
                 # case. When we have run out of unique video files, as well as initially when we have an empty iterator,
@@ -840,8 +849,8 @@ class VideoPlayer:
                 # the player's video file will be redirected to the favorite video, and the user request state will
                 # indicate REPLAY.
                 # If play_video() returns False, we can move on to the next random video.
-                while self.user_request == UserRequest.FORCE_PLAY or not video_file_done:
-                    self.play_video(resize_factor=resize_factor, video_filter=video_filter)
+                while user_request == UserRequest.FORCE_PLAY or not video_file_done:
+                    user_request = self.play_video(resize_factor=resize_factor, video_filter=video_filter)
                     video_file_done = True
 
             except StopIteration:
