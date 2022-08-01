@@ -126,10 +126,11 @@ def display_user_manual():
 
     These key-codes (case-sensitive) will trigger the corresponding functions.
     
-    L - Select individual files to add to the library matching the given file extensions.
-    o - Open a single video file to play immediately and add to the library of files.
-    O - Open a folder of video files and add all files matching the given extensions 
-        to the video library from this folder and any of its sub-folders.
+    L - Interactively load files into the video library. Supply video file extensions
+        and use the drop-down menu to choose to either load individual files or have 
+        all matching files automatically selected from a chosen folder, with or without 
+        including any matches found within sub-folders.
+    o - Open a single video file to add to the library of files and play immediately.
     q - Exit. Any video recording in progress will be completed.
     n - Skip to the next video.
     Space - Pause/resume video playback. Nice and intuitive.
@@ -149,6 +150,8 @@ def display_user_manual():
     s - Cycle through speed factors (1.0x, 2.0x, 4.0x, 8.0x, 16.0x, 0.0625x, 0.125x, 0.25x, 0.5x) in the 'fast' direction.
     d - Cycle through speed factors (1.0x, 0.5x, 0.25x, 0.125x, 0.0625x, 16.0x, 8.0x, 4.0x, 2.0x) in the 'slow' direction.
     a - Return to normalcy. Set the speed to 1.0x and turn off the filter.
+    v - Toggle reverse mode on/off. Video will begin playing backwards until it reaches the start, at which point
+        normal playback will resume. Beta feature. To be fleshed out more and improved...
     y - Cycle through video filters in the + direction.
     u - Cycle through video filters in the - direction.
     c - Toggle cutup mode on/off. When turned on, starting on the load of the next video, videos will play starting
