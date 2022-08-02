@@ -1,4 +1,3 @@
-import copy
 import enum
 import os
 import math
@@ -11,7 +10,6 @@ import numpy as np
 import cv2 as cv
 import tkinter as tk
 from tkinter import filedialog, ttk
-
 
 ########################################################################################################################
 # Utility functions ####################################################################################################
@@ -270,7 +268,7 @@ class VideoPlayer:
 
     # Print a string with relevant video properties: width and height in pixels, fps, current frame number,
     # total frame count, current time in hh:mm:ss.mss and total time in hh:mm:ss.ms
-    def print_basic_video_properties(self, video_capture):
+    def print_basic_video_properties(self):
         # Format current time in hh:mm:ss:mss
         current_time_string = get_time_string_from_seconds(self.current_time_ms / 1000)
 
@@ -320,6 +318,7 @@ class VideoPlayer:
             filetypes = list(map(lambda x: ("Video file", f"*{x}"), extensions))
 
             load_option = combobox.current()
+            directory = None
             if load_option == 0:
                 files = filedialog.askopenfilenames(filetypes=filetypes, title="Load selected video files.",
                                                     initialdir=self.recording_directory)
@@ -534,7 +533,7 @@ class VideoPlayer:
 
         self.save_dynamic_video_stats(video_capture)
 
-        self.print_basic_video_properties(video_capture)
+        self.print_basic_video_properties()
 
         if self.is_recording and self.recording_capture is None:
             self.open_recorder()
@@ -601,7 +600,7 @@ class VideoPlayer:
                 self.video_filter_mode = (self.video_filter_mode + 1) % VideoFilterMode.FILTER_MODES_COUNT
                 print(f"Video filter mode set to {VideoFilterMode(self.video_filter_mode).name.replace('_', ' ')}")
 
-            # Press backspace on Windows / delete on mac to jump to start of video
+            # Press backspace on Windows / delete on Mac to jump to start of video
             elif wait_key_chr == '\b' or wait_key_chr == '\x7f':
                 # Restart the video
                 video_capture.set(cv.CAP_PROP_POS_MSEC, 0)
@@ -751,7 +750,7 @@ class VideoPlayer:
 
             # Press 'i' to print basic video information.
             elif wait_key_chr == 'i':
-                self.print_basic_video_properties(video_capture)
+                self.print_basic_video_properties()
 
             # Press 'z' to toggle recording the video stream to a file.
             elif wait_key_chr == 'z':
@@ -779,10 +778,10 @@ class VideoPlayer:
             # Press 'o' to open a new custom file to play immediately
             elif wait_key_chr == 'o':
                 # TO DO: Figure out why tkinter filedialog functions cause a
-                # segmentation fault only on mac. For now, only allow loading
-                # videos at startup on mac.
+                # segmentation fault only on Mac. For now, only allow loading
+                # videos at startup on Mac.
                 if sys.platform == "darwin":
-                    print("This feature doesn't work on mac. Looking into it...")
+                    print("This feature doesn't work on Mac. Looking into it...")
                     break
 
                 root = tk.Tk()
@@ -800,10 +799,10 @@ class VideoPlayer:
             # Press 'O' to open video files interactively to add to the current video file collection
             elif wait_key_chr == 'O':
                 # TO DO: Figure out why tkinter filedialog functions cause a
-                # segmentation fault only on mac. For now, only allow loading
-                # videos at startup on mac.
+                # segmentation fault only on Mac. For now, only allow loading
+                # videos at startup on Mac.
                 if sys.platform == "darwin":
-                    print("This feature doesn't work on mac. Looking into it...")
+                    print("This feature doesn't work on Mac. Looking into it...")
                     break
 
                 self.load_videos_interactive()
@@ -904,12 +903,14 @@ class VideoPlayer:
 
         return user_request
 
+
 def run():
     video_player = VideoPlayer()
     user_request = UserRequest.NONE
     while user_request != UserRequest.ABORT:
         video_player.load_videos_interactive()
         user_request = video_player.play_videos()
+
 
 run()
 
