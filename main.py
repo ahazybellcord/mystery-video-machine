@@ -1,10 +1,10 @@
+from datetime import datetime
 import enum
 import os
 import math
 import random
 import re
 import sys
-import time
 
 import numpy as np
 import cv2 as cv
@@ -18,10 +18,25 @@ from tkinter import filedialog, ttk
 def constrain(x, minimum, maximum):
     return min(max(x, minimum), maximum)
 
+def sanitize_directory(directory):
+    if sys.platform == "darwin":
+        directory = os.path.expanduser(directory)
+    else: # sys.platform == "win32"
+        directory = os.path.expandvars(directory)
+    return directory
+def get_user_video_directory():
+    if sys.platform == "win32":
+        return r"%USERPROFILE%\Videos"
+    elif sys.platform == "darwin":
+        return r"~/Movies"
+    else:
+        return "/"
+
 # Return a list of filepaths in a directory that match on any of the extensions.
 # If recursive, include any matches in all subdirectories.
 def get_files(directory, extensions, recursive=False):
     matched_files = []
+    directory = os.path.normpath(sanitize_directory(directory))
     if not os.path.isdir(directory) or len(extensions) == 0:
         return matched_files
 
@@ -79,11 +94,11 @@ class VideoFilter(enum.IntEnum):
     CYAN_FILTER = 7
     MAGENTA_FILTER = 8
 
-    SWAP_RED_GREEN = 9
-    SWAP_GREEN_BLUE = 10
-    SWAP_BLUE_RED = 11
-    CYCLE_BLUE_GREEN_RED_ONCE = 12
-    CYCLE_BLUE_GREEN_RED_TWICE = 13
+    RGB_TO_GRB = 9
+    RGB_TO_RBG = 10
+    RGB_TO_BGR = 11
+    RGB_TO_BRG = 12
+    RGB_TO_GBR = 13
 
     BGR_TO_HSV = 14
     RGB_TO_HSV = 15
@@ -104,11 +119,41 @@ class VideoFilter(enum.IntEnum):
 
     FILTER_COUNT = 30
 
-class VideoFilterMode(enum.IntEnum):
-    NORMAL = 0
-    RANDOM = 1
+class VideoFilterGroup(enum.IntEnum):
+    NO_FILTER = 0
+    ALL = 1
+    COLOR_CHANNELS = 2
+    COLOR_SWAP = 3
+    COLOR_HSV = 4
+    COLOR_HLS = 5
+    COLOR_LAB = 6
+    COLOR_LUV = 7
+    WACKY = 8
 
-    FILTER_MODES_COUNT = 2
+    FILTER_GROUPS_COUNT = 9
+
+def get_video_filter_group(filter_group):
+    if filter_group == VideoFilterGroup.NO_FILTER:
+        return (VideoFilter.NO_FILTER, )
+    elif filter_group == VideoFilterGroup.ALL:
+        return tuple(VideoFilter(video_filter) for video_filter in range(VideoFilter.FILTER_COUNT))
+    elif filter_group == VideoFilterGroup.COLOR_CHANNELS:
+        return VideoFilter.RED_FILTER, VideoFilter.GREEN_FILTER, VideoFilter.BLUE_FILTER, \
+               VideoFilter.YELLOW_FILTER, VideoFilter.CYAN_FILTER, VideoFilter.MAGENTA_FILTER
+    elif filter_group == VideoFilterGroup.COLOR_SWAP:
+        return VideoFilter.RGB_TO_GRB, VideoFilter.RGB_TO_RBG, VideoFilter.RGB_TO_BGR, \
+               VideoFilter.RGB_TO_BRG, VideoFilter.RGB_TO_GBR
+    elif filter_group == VideoFilterGroup.COLOR_HSV:
+        return VideoFilter.RGB_TO_HSV, VideoFilter.BGR_TO_HSV, VideoFilter.HSV_TO_RGB, VideoFilter.HSV_TO_BGR
+    elif filter_group == VideoFilterGroup.COLOR_HLS:
+        return VideoFilter.RGB_TO_HLS, VideoFilter.BGR_TO_HLS, VideoFilter.HLS_TO_RGB, VideoFilter.HLS_TO_BGR
+    elif filter_group == VideoFilterGroup.COLOR_LAB:
+        return VideoFilter.RGB_TO_LAB, VideoFilter.BGR_TO_LAB, VideoFilter.LAB_TO_RGB, VideoFilter.LAB_TO_BGR
+    elif filter_group == VideoFilterGroup.COLOR_LUV:
+        return VideoFilter.RGB_TO_LUV, VideoFilter.BGR_TO_LUV, VideoFilter.LUV_TO_RGB, VideoFilter.LUV_TO_BGR
+    elif filter_group == VideoFilterGroup.WACKY:
+        return get_video_filter_group(VideoFilterGroup.COLOR_HSV) + get_video_filter_group(VideoFilterGroup.COLOR_HLS) \
+               + get_video_filter_group(VideoFilterGroup.COLOR_LAB) + get_video_filter_group(VideoFilterGroup.COLOR_LUV)
 
 # User options to interrupt normal player functionality
 class UserRequest(enum.Enum):
@@ -145,6 +190,8 @@ def display_user_manual():
     t - Set the current time to recall with 'j'.
     j - Jump back to the time set by 't'.
     g - Toggle random filter mode. When turned on, a random filter will be selected each time a new video is loaded.
+    e - Advance forward one frame.
+    E - Advance backward one frame.
     f - Jump forward one second scaled by the current speed factor (see 's' and 'd').
     F - Jump forward five seconds scaled by the current speed factor (see 's' and 'd').
     r - Jump backward one second scaled by the current speed factor (see 's' and 'd').
@@ -210,22 +257,18 @@ class VideoPlayer:
         self.cutup_interval = 1000
 
         self.is_recording = False
+        recording_subdirectory = "Mystery Machine Videos"
         if recording_directory is None:
             # Point to the platform-specific user video directory
-            if sys.platform == "darwin":
-                recording_directory = os.path.expanduser("~/Movies")
-            elif sys.platform == "win32":
-                recording_directory = os.path.expandvars(r"%USERPROFILE%\Videos")
-            else:
-                print("Platform unsupported! How are you running this??")
-                exit(0)
+            recording_directory = os.path.normpath(os.path.join(sanitize_directory(get_user_video_directory()),
+                                                                recording_subdirectory))
         self.recording_directory = os.path.normpath(recording_directory)
         self.recording_dimensions = recording_dimensions
         self.recording_filepath = None
         self.recording_capture = None
         self.recorder_fps = None
 
-        self.video_filter_mode = VideoFilterMode.NORMAL
+        self.video_filter_group = None
 
         # Keep video file names as keys in a dictionary (with dummy values) to easily avoid adding duplicates
         self.video_files_dict = {}
@@ -248,8 +291,6 @@ class VideoPlayer:
 
         self.speed_factors = [1.0, 2.0, 4.0, 8.0, 16.0, 0.0625, 0.125, 0.25, 0.5]
         self.speed_factor_index = 0
-
-        self.reverse_mode = False
 
     # Return the list of video files currently loaded in the video player.
     def video_file_list(self):
@@ -321,12 +362,12 @@ class VideoPlayer:
             directory = None
             if load_option == 0:
                 files = filedialog.askopenfilenames(filetypes=filetypes, title="Load selected video files.",
-                                                    initialdir=self.recording_directory)
+                                                    initialdir=sanitize_directory(get_user_video_directory()))
             else:
                 recursive = (load_option == 2)
-                directory = os.path.normpath(filedialog.askdirectory(mustexist=True,
-                                                                     title="Load all videos within a directory.",
-                                                                     initialdir=self.recording_directory))
+                directory = os.path.normpath(
+                    filedialog.askdirectory(mustexist=True,title="Load all videos within a directory.",
+                                            initialdir=sanitize_directory(get_user_video_directory())))
                 files = get_files(directory, extensions, recursive=recursive)
 
             if len(files) == 0:
@@ -389,16 +430,16 @@ class VideoPlayer:
             filter_mask = np.array([1, 0, 1], dtype=np.uint8)
             frame = apply_filter_mask(filter_mask, frame)
 
-        elif video_filter == VideoFilter.SWAP_RED_GREEN:
+        elif video_filter == VideoFilter.RGB_TO_GRB:
             frame[:, :, [1, 2]] = frame[:, :, [2, 1]]
-        elif video_filter == VideoFilter.SWAP_GREEN_BLUE:
+        elif video_filter == VideoFilter.RGB_TO_RBG:
             frame[:, :, [0, 1]] = frame[:, :, [1, 0]]
-        elif video_filter == VideoFilter.SWAP_BLUE_RED:
+        elif video_filter == VideoFilter.RGB_TO_BGR:
             frame[:, :, [0, 2]] = frame[:, :, [2, 0]]
-        elif video_filter == VideoFilter.CYCLE_BLUE_GREEN_RED_ONCE:
+        elif video_filter == VideoFilter.RGB_TO_BRG:
             frame[:, :, [0, 1]] = frame[:, :, [1, 0]]
             frame[:, :, [1, 2]] = frame[:, :, [2, 1]]
-        elif video_filter == VideoFilter.CYCLE_BLUE_GREEN_RED_TWICE:
+        elif video_filter == VideoFilter.RGB_TO_GBR:
             frame[:, :, [0, 1]] = frame[:, :, [1, 0]]
             frame[:, :, [0, 2]] = frame[:, :, [2, 0]]
 
@@ -449,7 +490,7 @@ class VideoPlayer:
 
     def save_static_video_stats(self, video_capture):
         if not video_capture.isOpened():
-            return
+            return False
 
         self.fps = video_capture.get(cv.CAP_PROP_FPS)
         self.frame_count = int(video_capture.get(cv.CAP_PROP_FRAME_COUNT))
@@ -469,9 +510,11 @@ class VideoPlayer:
         self.current_time_ms = video_capture.get(cv.CAP_PROP_POS_MSEC)
 
     def open_recorder(self):
-        time_string = get_time_string_from_seconds(time.time()).replace(':', '-').replace('.', ',')
-        recording_filename = f"recording_{time_string}.mp4"
+        time_string = datetime.today().strftime('%Y-%m-%d %H-%M-%S')
+        recording_filename = f"{time_string}.mp4"
         recorder_fps = self.fps if self.recorder_fps is None else self.recorder_fps
+        if not os.path.isdir(self.recording_directory):
+            os.mkdir(self.recording_directory)
         self.recording_filepath = os.path.join(self.recording_directory, recording_filename)
 
         self.recording_capture = cv.VideoWriter(self.recording_filepath, cv.VideoWriter_fourcc(*'mp4v'),
@@ -484,55 +527,60 @@ class VideoPlayer:
         pass
 
     # Play a video file.
-    def play_video(self, resize_factor=(1.0, 1.0), start_time=0, duration=0, video_filter=VideoFilter.NO_FILTER):
+    def play_video(self, video_file, resize_factor=(1.0, 1.0), start_time_ms=0, duration_ms=0,
+                   video_filter=VideoFilter.NO_FILTER, reverse=False):
         frame = None
         jump_time = None
         jump_time_string = ''
         force_redisplay = False
         force_refresh = True
         user_request = UserRequest.NONE
-        error = False
+        self.video_file = video_file
+        reverse_end = False
 
         # If in random filter mode, select a random filter
-        if self.video_filter_mode == VideoFilterMode.RANDOM:
-            video_filter = random.randint(0, VideoFilter.FILTER_COUNT - 1)
+        if self.video_filter_group is not None:
+            video_filter = random.choice(get_video_filter_group(self.video_filter_group))
+
+        if video_filter != VideoFilter.NO_FILTER:
             print(f"Filter set to {VideoFilter(video_filter).name.replace('_', ' ')}")
 
         # Open the video stream to play
         video_capture = cv.VideoCapture(self.video_file)
 
-        # Save video statistics that won't change as a result of playback
-        if not self.save_static_video_stats(video_capture):
-            error = True
+        # Save video statistics that won't change as a result of playback and check for errors.
+        # If the video is too short to accommodate the cutup interval, move to another video.
+        # This will be an issue if none of the loaded videos are long enough...
+        video_ok = self.save_static_video_stats(video_capture) \
+            and not (self.cutup_mode and self.total_time_ms < self.cutup_interval)
 
-        # If in cutup mode, generate a random starting point with enough time to play
-        # the full interval. If the video is too short, abort.
-        elif self.cutup_mode:
-            # If the video is too short to accommodate the cutup interval, move to another video.
-            # This will be an issue if none of the loaded videos are long enough...
-            if self.total_time_ms < self.cutup_interval:
-                error = True
-            else:
-                start_time = random.random() * (self.total_time_ms - self.cutup_interval)
-                duration = self.cutup_interval
-
-        if error:
+        if not video_ok:
             video_capture.release()
             return user_request
 
+        # If in cutup mode, generate a random starting point with enough time to play
+        # the full interval. If the video is too short, abort.
+        if self.cutup_mode:
+            start_time_ms = random.random() * (self.total_time_ms - self.cutup_interval)
+            duration_ms = self.cutup_interval
+
         # Calculate end time
-        end_time = self.total_time_ms if duration <= 0 else min(start_time + duration, self.total_time_ms)
+        end_time_ms = self.total_time_ms if duration_ms <= 0 else min(start_time_ms + duration_ms, self.total_time_ms)
 
         # Calculate frame numbers to start and stop on
-        start_frame = int(self.fps * start_time / 1000)
-        end_frame = int(self.fps * end_time / 1000)
+        start_frame = int(self.fps * start_time_ms / 1000)
+        end_frame = int(self.fps * end_time_ms / 1000) - 1
+
+        # If playing in reverse, swap the start and end points
+        if reverse:
+            start_frame, end_frame = end_frame, start_frame
+            start_time_ms, end_time_ms = end_time_ms, start_time_ms
 
         # Seek to the appropriate start frame
         if start_frame > 0:
             video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
 
         self.save_dynamic_video_stats(video_capture)
-
         self.print_basic_video_properties()
 
         if self.is_recording and self.recording_capture is None:
@@ -543,21 +591,23 @@ class VideoPlayer:
             if force_redisplay:
                 self.filter_resize_display_frame(frame, resize_factor, video_filter)
                 force_redisplay = False
-            # If unpaused, or we seek to a new time while paused, grab the next frame to display here
+
+            # If not paused, or we are forced to refresh as the result of a realtime filter change
+            # or jump to a new time
             elif not self.is_paused or force_refresh:
                 force_refresh = False
 
-                if not self.is_paused and self.frame_position == end_frame:
+                end_condition = (reverse and reverse_end) or (not reverse and self.frame_position == end_frame + 1)
+                if not self.is_paused and end_condition:
                     if self.loop_mode:
                         # Seek back to the start of video
-                        video_capture.set(cv.CAP_PROP_POS_FRAMES, 0)
+                        video_capture.set(cv.CAP_PROP_POS_FRAMES, start_frame)
                     else:
                         # End of video
                         break
 
                 # Get current video frame
                 ret, frame = video_capture.read()
-
                 self.save_dynamic_video_stats(video_capture)
 
                 filtered_frame = self.filter_resize_display_frame(frame, resize_factor, video_filter)
@@ -571,7 +621,15 @@ class VideoPlayer:
 
                     self.recording_capture.write(recorded_frame)
 
-            # Handle user input
+                if reverse:
+                    target_frame = self.frame_position - 2
+                    if target_frame < end_frame:
+                        reverse_end = True
+                    else:
+                        video_capture.set(cv.CAP_PROP_POS_FRAMES, target_frame)
+                        self.save_dynamic_video_stats(video_capture)
+
+                    # Handle user input
             wait_key = cv.waitKey(self.frame_time_ms) & 0xFF
             wait_key_chr = chr(wait_key)
 
@@ -597,8 +655,10 @@ class VideoPlayer:
 
             # Press 'g' to toggle filter mode (normal, random)
             elif wait_key_chr == 'g':
-                self.video_filter_mode = (self.video_filter_mode + 1) % VideoFilterMode.FILTER_MODES_COUNT
-                print(f"Video filter mode set to {VideoFilterMode(self.video_filter_mode).name.replace('_', ' ')}")
+                if self.video_filter_group is None:
+                    self.video_filter_group = VideoFilterGroup.NO_FILTER
+                self.video_filter_group = (self.video_filter_group + 1) % VideoFilterGroup.FILTER_GROUPS_COUNT
+                print(f"Video filter group set to {VideoFilterGroup(self.video_filter_group).name.replace('_', ' ')}")
 
             # Press backspace on Windows / delete on Mac to jump to start of video
             elif wait_key_chr == '\b' or wait_key_chr == '\x7f':
@@ -627,24 +687,34 @@ class VideoPlayer:
             elif wait_key_chr == ' ':
                 self.is_paused = not self.is_paused
                 print(f"Playback {'' if self.is_paused else 'un'}paused.")
+                
+            elif wait_key_chr == 'r':
+                reverse = not reverse
+                start_time_ms, end_time_ms = end_time_ms, start_time_ms
+                start_frame, end_frame = end_frame, start_frame
+                if reverse:
+                    video_capture.set(cv.CAP_PROP_POS_FRAMES, max(self.frame_position - 2, end_frame))
+                    self.save_dynamic_video_stats(video_capture)
+                print(f"Reverse mode {'on' if reverse else 'off'}")
 
-            # Press 'r' to rewind 1 second, scaled by the current speed multiplier.
-            # Press 'R' to rewind 5 seconds, scaled by the current speed multiplier.
-            # Press 'f'/'F' similarly to fast-forward.
-            elif wait_key_chr == 'f' or wait_key_chr == 'F' or wait_key_chr == 'r' or wait_key_chr == 'R':
+            # Press 'b' to jump back 1 second, scaled by the current speed multiplier.
+            # Press 'B' to jump back 5 seconds, scaled by the current speed multiplier.
+            # Press 'f'/'F' similarly to jump forward.
+            elif wait_key_chr == 'f' or wait_key_chr == 'F' or wait_key_chr == 'b' or wait_key_chr == 'B':
                 # Calculate seek interval. Seeking is proportional to the current playback rate. Seek will always
                 # increment by 1 or 5 seconds as measured at the current playback speed. For example, if the
                 # playback rate is 0.25x, a short seek will move forward 0.25 seconds as measured at a playback
                 # rate of 1.0x., which is 1.0 s at the rate of 0.25x.
-                speed_multiplier = self.speed_factors[self.speed_factor_index]
+                reverse_factor = -1 if reverse else 1
+                speed_factor = reverse_factor * self.speed_factors[self.speed_factor_index]
                 if wait_key_chr == 'f':
-                    seek_time = 1.0 * speed_multiplier
+                    seek_time = 1.0 * speed_factor
                 elif wait_key_chr == 'F':
-                    seek_time = 5.0 * speed_multiplier
-                elif wait_key_chr == 'r':
-                    seek_time = -1.0 * speed_multiplier
+                    seek_time = 5.0 * speed_factor
+                elif wait_key_chr == 'b':
+                    seek_time = -1.0 * speed_factor
                 else:
-                    seek_time = -5.0 * speed_multiplier
+                    seek_time = -5.0 * speed_factor
 
                 frames_to_seek = int(math.floor(self.fps * seek_time))
                 target_frame = self.frame_position + frames_to_seek
@@ -656,7 +726,7 @@ class VideoPlayer:
                 video_capture.set(cv.CAP_PROP_POS_FRAMES, target_frame)
                 if self.is_paused:
                     force_refresh = True
-                print(f"Seeking {'+' if seek_time > 0 else ''}{seek_time}s to {frame_to_seek_time_string}.")
+                print(f"Seeking {'+' if seek_time > 0 else ''}{seek_time}s to {frame_to_seek_time_string}{end_time_ms}.")
 
             # Press 'e' to advance one frame (just like VLC)
             elif wait_key_chr == 'e':
@@ -678,11 +748,11 @@ class VideoPlayer:
             elif wait_key_chr == 's' or wait_key_chr == 'd':
                 speed_factor_increment = 1 if wait_key_chr == 'd' else -1
                 self.speed_factor_index = (self.speed_factor_index + speed_factor_increment) % len(self.speed_factors)
-                speed_multiplier = self.speed_factors[self.speed_factor_index]
+                speed_factor = self.speed_factors[self.speed_factor_index]
 
-                effective_fps = speed_multiplier * self.fps
+                effective_fps = speed_factor * self.fps
                 self.frame_time_ms = int(1000.0 / effective_fps)
-                print(f"Setting speed to {speed_multiplier:0.3f}x = {effective_fps:0.3f} fps.")
+                print(f"Setting speed to {speed_factor:0.3f}x = {effective_fps:0.3f} fps.")
 
             # Press 'a' to restore both speed up and slow down cycles to 100% and remove filter
             elif wait_key_chr == 'a':
@@ -843,7 +913,7 @@ class VideoPlayer:
         return user_request
 
     def play_videos(self, with_replacement=False, resize_factor=(1.0, 1.0), cutup_mode=False, cutup_interval=1000,
-                    video_filter=VideoFilter.NO_FILTER, video_filter_mode=VideoFilterMode.NORMAL,
+                    video_filter=VideoFilter.NO_FILTER, video_filter_group=None, random_reverse=False, reverse=False,
                     recording_directory=None, recording_dimensions=None, recorder_fps=None, auto_record=False):
         user_request = UserRequest.NONE
         file_count = self.video_file_count()
@@ -855,7 +925,9 @@ class VideoPlayer:
 
         self.cutup_mode = cutup_mode
         self.cutup_interval = cutup_interval
-        self.video_filter_mode = video_filter_mode
+
+        if video_filter_group is not None:
+            self.video_filter_group = video_filter_group
 
         if recording_directory is not None:
             self.recording_directory = recording_directory
@@ -878,7 +950,7 @@ class VideoPlayer:
                 # This will only fail if there's nothing left to iterate over, which is only in the without replacement
                 # case. When we have run out of unique video files, as well as initially when we have an empty iterator,
                 # this call to next() will raise a StopIteration exception.
-                self.video_file = next(video_iterator)
+                video_file = next(video_iterator)
 
                 video_file_done = False
                 
@@ -887,7 +959,10 @@ class VideoPlayer:
                 # indicate REPLAY.
                 # If play_video() returns False, we can move on to the next random video.
                 while user_request == UserRequest.FORCE_PLAY or not video_file_done:
-                    user_request = self.play_video(resize_factor=resize_factor, video_filter=video_filter)
+                    if random_reverse:
+                        reverse = random.choice([True, False])
+                    user_request = self.play_video(video_file, resize_factor=resize_factor, video_filter=video_filter,
+                                                   reverse=reverse)
                     video_file_done = True
 
             except StopIteration:
